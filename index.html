@@ -5,31 +5,47 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ASVAB Pre-Test (Verbal & Math)</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #0b0f14; color: #e9eef5; margin: 0; }
+    :root{
+      --bg:#0b0f14;
+      --card:#121821;
+      --muted-border:#233145;
+      --primary:#2563eb;
+      --primary-hover:#1d4ed8;
+      --choice-bg:#1f2937;
+      --correct:#14532d;
+      --wrong:#7f1d1d;
+      --text:#e9eef5;
+      --meter-start:#2bb673;
+      --meter-end:#3b82f6;
+    }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; }
     .wrap { max-width: 900px; margin: 2rem auto; padding: 1rem; }
-    .card { background: #121821; border-radius: 16px; padding: 24px; margin-bottom: 1rem; }
+    .card { background: var(--card); border-radius: 16px; padding: 24px; margin-bottom: 1rem; }
     h1, h2, h3 { margin-top: 0; }
-    button { background: #2563eb; color: #fff; border: none; padding: 10px 18px; border-radius: 10px; cursor: pointer; }
-    button:hover { background: #1d4ed8; }
-    .choice { display: block; margin: 0.5rem 0; padding: 0.5rem; background: #1f2937; border-radius: 8px; cursor: pointer; }
-    .correct { background: #14532d; }
-    .wrong { background: #7f1d1d; }
+    button { background: var(--primary); color: #fff; border: none; padding: 10px 18px; border-radius: 10px; cursor: pointer; }
+    button:hover { background: var(--primary-hover); }
+    .choice { display: block; margin: 0.5rem 0; padding: 0.5rem; background: var(--choice-bg); border-radius: 8px; cursor: pointer; border: 1px solid transparent; color: var(--text); text-align: left; }
+    .choice:focus { outline: 2px solid #3b82f6; outline-offset: 2px; }
+    .choice.selected { border-color: #3b82f6; }
+    .choice.correct { background: var(--correct); }
+    .choice.wrong { background: var(--wrong); }
     .hidden { display: none; }
     .meter { height: 10px; background: #0f1520; border-radius: 8px; margin-bottom: 1rem; }
-    .meter > i { display: block; height: 100%; background: linear-gradient(90deg, #2bb673, #3b82f6); width: 0%; }
+    .meter > i { display: block; height: 100%; background: linear-gradient(90deg, var(--meter-start), var(--meter-end)); width: 0%; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-    th, td { border: 1px solid #233145; padding: 8px; text-align: left; }
+    th, td { border: 1px solid var(--muted-border); padding: 8px; text-align: left; }
 
     .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
     @media (max-width: 760px){ .stats{ grid-template-columns: 1fr; } }
-    .tile { background:#0f1520; border:1px solid #233145; border-radius:12px; padding:12px; }
+    .tile { background:#0f1520; border:1px solid var(--muted-border); border-radius:12px; padding:12px; }
     .meter-sm{ height:8px; background:#0b1220; border-radius:6px; }
-    .meter-sm>i{ display:block; height:100%; background:linear-gradient(90deg,#2bb673,#3b82f6); width:0%; }
-    canvas{ background:#0f1520; border:1px solid #233145; border-radius:12px; }
+    .meter-sm>i{ display:block; height:100%; background:linear-gradient(90deg,var(--meter-start),var(--meter-end)); width:0%; }
+    canvas{ background:#0f1520; border:1px solid var(--muted-border); border-radius:12px; width:100%; max-width:100%; height:280px; display:block; }
+
     /* tooltip */
     .tip{ display:inline-flex; align-items:center; gap:6px; margin-left:6px; position:relative; }
-    .tip i{ display:inline-block; width:18px; height:18px; border-radius:50%; background:#1f2937; border:1px solid #334155; text-align:center; line-height:18px; font-style:normal; font-weight:700; font-size:12px; color:#9fb3c8; cursor:default; }
-    .tip .bubble{ position:absolute; left:0; top:130%; width:min(540px,90vw); background:#0b1220; border:1px solid #233145; color:#e9eef5; padding:10px; border-radius:10px; display:none; z-index:5; }
+    .tip i{ display:inline-block; width:18px; height:18px; border-radius:50%; background:#1f2937; border:1px solid #334155; text-align:center; line-height:18px; font-style:normal; font-weight:700; font-size:0.85rem; color:var(--text); }
+    .tip .bubble{ position:absolute; left:0; top:130%; width:min(540px,90vw); background:#0b1220; border:1px solid var(--muted-border); color:var(--text); padding:10px; border-radius:10px; display:none; z-index:5; }
     .tip:hover .bubble{ display:block; }
   </style>
 </head>
@@ -50,7 +66,7 @@
   <div class="wrap">
     <div id="start" class="card">
       <h1>ASVAB Pre-Test</h1>
-      <p>This practice test covers four core ASVAB areas: <b>Word Knowledge</b>, <b>Paragraph Comprehension</b>, <b>Mathematics Knowledge</b>, and <b>Arithmetic Reasoning</b>. Select your settings below and start the quiz.</p>
+      <p>This practice test covers four core ASVAB areas: <b>Word Knowledge</b>, <b>Paragraph Comprehension</b>, <b>Mathematics Knowledge</b>, and <b>Arithmetic Reasoning</b>. Select your settings below.</p>
       <label>Mode:</label>
       <select id="modeSel">
         <option value="balanced-40" selected>Balanced – 40 questions (10 per section)</option>
@@ -68,7 +84,7 @@
       <div id="choiceList"></div>
       <button id="btnPrev">Back</button>
       <button id="btnNext">Next</button>
-      <p id="feedback"></p>
+      <p id="feedback" aria-live="polite"></p>
     </div>
 
     <div id="summary" class="card hidden">
@@ -79,7 +95,7 @@
         <span class="tip" aria-label="What is AFQT?">
           <i>i</i>
           <span class="bubble">
-            <b>AFQT (Armed Forces Qualification Test)</b> is an official percentile based on scaled scores from four subtests: Word Knowledge (WK), Paragraph Comprehension (PC) → combined into VE, plus Arithmetic Reasoning (AR) and Mathematics Knowledge (MK).<br><br>
+            <b>AFQT (Armed Forces Qualification Test)</b> is an official percentile based on scaled scores from four subtests: Word Knowledge (WK), Paragraph Comprehension (PC) → combined into VE, plus MK and AR.
             This app shows an <em>unofficial practice index</em> to gauge readiness:<br>
             <code>Practice AFQT Index = (2 × VE + AR + MK) / 4</code>, where <code>VE = average(WK%, PC%)</code>.
           </span>
@@ -116,14 +132,14 @@ const BANK = {
     {d:'WK',q:'Select the best synonym for IMPEDE.',c:['Help','Block','Promote','Encourage'],a:1}
   ],
   PC:[
-    {d:'PC',q:'A passage says: “Proper hydration improves focus.” The main idea is that:',c:['Water causes illness.','Dehydration reduces concentration.','Hydration reduces intelligence.','Focus is unrelated to hydration.'],a:1},
+    {d:'PC',q:'A passage says: “Proper hydration improves focus.” The main idea is that:',c:['Water causes illness.','Dehydration reduces concentration.','Hydration reduces intelligence.','Focus is unaffected.'],a:1},
     {d:'PC',q:'A passage describes how a lever helps lift heavy objects. The main idea is about:',c:['Musical instruments','Mechanical advantage','Human strength','Gravity'],a:1},
-    {d:'PC',q:'A passage states: “Farmers rotate crops yearly to restore soil nutrients.” This means:',c:['Crop rotation harms soil.','Changing crops helps maintain fertility.','Farmers waste land.','Nutrients are unimportant.'],a:1},
+    {d:'PC',q:'A passage states: “Farmers rotate crops yearly to restore soil nutrients.” This means:',c:['Crop rotation harms soil.','Changing crops helps maintain fertility.','Farmers waste land.','Rotating crops is unnecessary.'],a:1},
     {d:'PC',q:'If a paragraph explains the water cycle, it is mainly about:',c:['Weather and evaporation','Space travel','Food chains','Wind direction'],a:0},
     {d:'PC',q:'A paragraph explains that regular study improves memory. The best conclusion is:',c:['Study has no effect.','Practice strengthens recall.','Only rest improves memory.','Memory cannot improve.'],a:1},
-    {d:'PC',q:'If a passage details soldiers’ training improving teamwork, the main idea is:',c:['Training builds cooperation.','Teamwork harms progress.','Individual work is better.','Soldiers train for fitness only.'],a:0},
+    {d:'PC',q:'If a passage details soldiers’ training improving teamwork, the main idea is:',c:['Training builds cooperation.','Teamwork harms progress.','Individual work is better.','Soldiers train alone.'],a:0},
     {d:'PC',q:'A paragraph about nutrition focusing on protein intake is mainly about:',c:['Carbohydrates','Exercise','Protein and diet','Water intake'],a:2},
-    {d:'PC',q:'A passage states: “Good sleep enhances cognitive performance.” The conclusion is:',c:['Sleep reduces performance.','Rest has no benefit.','Sleep helps the brain work better.','Cognition is unrelated to sleep.'],a:2},
+    {d:'PC',q:'A passage states: “Good sleep enhances cognitive performance.” The conclusion is:',c:['Sleep reduces performance.','Rest has no benefit.','Sleep helps the brain work better.','Cognitive ability declines with sleep.'],a:2},
     {d:'PC',q:'If a paragraph discusses recycling benefits, its purpose is to:',c:['Discourage recycling.','Explain advantages of recycling.','Describe littering.','Promote deforestation.'],a:1},
     {d:'PC',q:'A passage about soldiers’ discipline implies that:',c:['Rules reduce order.','Discipline supports effectiveness.','Freedom is harmful.','Training is not required.'],a:1}
   ],
@@ -153,9 +169,10 @@ const BANK = {
   ]
 };
 
-let quiz=[],answers=[],i=0,instant=false;
+let quiz=[], answers=[], i=0, instant=false;
 const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
 function pickN(arr,n){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a.slice(0,n); }
+
 function start(){
   const mode = $('#modeSel').value; // 'balanced-40' or 'quick-32'
   const per = mode==='quick-32' ? 8 : 10;
@@ -168,37 +185,84 @@ function start(){
   $('#start').classList.add('hidden'); $('#quiz').classList.remove('hidden');
   render();
 }
+
 function render(){
-  const q=quiz[i]; $('#qText').textContent=`(${q.d}) ${q.q}`;
+  const q=quiz[i];
+  $('#qText').textContent=`(${q.d}) ${q.q}`;
   const list=$('#choiceList'); list.innerHTML='';
   q.c.forEach((ch,idx)=>{
-    const div=document.createElement('div'); div.textContent=ch; div.className='choice';
-    div.onclick=()=>select(idx); if(answers[i]===idx) div.style.outline='2px solid #3b82f6';
-    list.appendChild(div);
+    // use a button so it's keyboard accessible and semantic
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='choice';
+    btn.setAttribute('data-choice', idx);
+    btn.setAttribute('aria-pressed', String(answers[i]===idx));
+    btn.textContent = ch;
+    btn.addEventListener('click', ()=>select(idx));
+    if(answers[i]===idx) btn.classList.add('selected');
+    list.appendChild(btn);
   });
-  $('#progressBar').style.width=((i/quiz.length)*100)+'%'; $('#feedback').textContent='';
+  // progress reflects position (1..N)
+  $('#progressBar').style.width = (((i+1)/quiz.length)*100) + '%';
+  $('#feedback').textContent='';
 }
+
 function select(idx){
   answers[i]=idx;
+  // reflect selection UI
+  const listItems = $$('#choiceList .choice');
+  listItems.forEach((el)=>{
+    const j = Number(el.getAttribute('data-choice'));
+    el.classList.remove('correct','wrong','selected');
+    el.setAttribute('aria-pressed', 'false');
+    if(j === idx) { el.classList.add('selected'); el.setAttribute('aria-pressed','true'); }
+  });
+
   if(instant){
-    const q=quiz[i]; const list=$$('#choiceList .choice');
-    list.forEach((el,j)=>{el.classList.remove('correct','wrong');
-      if(j===q.a) el.classList.add('correct'); else if(j===idx) el.classList.add('wrong');});
-    $('#feedback').textContent= idx===q.a ? 'Correct!' : `Incorrect. Correct: ${q.c[q.a]}`;
+    const q = quiz[i];
+    const list = $$('#choiceList .choice');
+    list.forEach((el)=>{
+      const j = Number(el.getAttribute('data-choice'));
+      el.classList.remove('correct','wrong');
+      if(j === q.a) el.classList.add('correct');
+      else if(j === idx) el.classList.add('wrong');
+    });
+    $('#feedback').textContent = idx === q.a ? 'Correct!' : `Incorrect. Correct: ${q.c[q.a]}`;
   }
 }
-function next(){ if(i<quiz.length-1){i++; render();} else finish(); }
-function prev(){ if(i>0){i--; render();} }
+
+function next(){ if(i<quiz.length-1){ i++; render(); } else finish(); }
+function prev(){ if(i>0){ i--; render(); } }
+
 function finish(){
+  // ensure progress shows complete
+  $('#progressBar').style.width = '100%';
+
   let correct=0; const tbody=$('#review'); tbody.innerHTML='';
   const byDom={WK:{t:0,c:0},PC:{t:0,c:0},MK:{t:0,c:0},AR:{t:0,c:0}};
-  quiz.forEach((q,k)=>{const a=answers[k]; const ok=a===q.a; if(ok) correct++;
+  quiz.forEach((q,k)=>{
+    const a = answers[k];
+    const ok = a === q.a;
+    if(ok) correct++;
     byDom[q.d].t++; if(ok) byDom[q.d].c++;
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${k+1}</td><td>${q.d}</td><td>${q.q}</td><td>${a!=null?q.c[a]:''}</td><td>${q.c[q.a]}</td>`;
+
+    // create row without innerHTML to avoid XSS (textContent)
+    const tr = document.createElement('tr');
+    const tdIdx = document.createElement('td'); tdIdx.textContent = String(k+1);
+    const tdDom = document.createElement('td'); tdDom.textContent = q.d;
+    const tdQ = document.createElement('td'); tdQ.textContent = q.q;
+    const tdYour = document.createElement('td'); tdYour.textContent = (a != null) ? q.c[a] : '';
+    const tdCorrect = document.createElement('td'); tdCorrect.textContent = q.c[q.a];
+
+    tr.appendChild(tdIdx);
+    tr.appendChild(tdDom);
+    tr.appendChild(tdQ);
+    tr.appendChild(tdYour);
+    tr.appendChild(tdCorrect);
     tbody.appendChild(tr);
   });
-  const pct=Math.round(correct/quiz.length*100);
+
+  const pct = Math.round(correct/quiz.length*100);
   $('#scoreLine').textContent=`You got ${correct}/${quiz.length} correct (${pct}%).`;
 
   // Section tiles
@@ -214,8 +278,8 @@ function finish(){
   });
 
   // Practice AFQT index (unofficial): AFQT_index = (2*VE + AR + MK)/4, where VE = (WK% + PC%)/2
-  const VE = ( (percents.WK||0) + (percents.PC||0) ) / 2;
-  const AFQT_index = Math.round( (2*VE + (percents.AR||0) + (percents.MK||0)) / 4 );
+  const VE = ((percents.WK||0) + (percents.PC||0)) / 2;
+  const AFQT_index = Math.round((2*VE + (percents.AR||0) + (percents.MK||0)) / 4);
   let band;
   if (AFQT_index >= 75) band = 'Excellent (Category I–IIA range)';
   else if (AFQT_index >= 60) band = 'Strong (approx. Cat IIA–IIB)';
@@ -230,14 +294,25 @@ function finish(){
 
   $('#quiz').classList.add('hidden'); $('#summary').classList.remove('hidden');
 }
+
 function drawBarChart(byDom){
-  const ctx=$('#barChart').getContext('2d');
+  const canvas = $('#barChart');
+  const ctx = canvas.getContext('2d');
+
+  // handle high-DPI / responsive canvas
+  const ratio = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  canvas.width = Math.round(w * ratio);
+  canvas.height = Math.round(h * ratio);
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
   // clear
-  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+  ctx.clearRect(0,0,w,h);
   const keys=['WK','PC','MK','AR'];
   const names={WK:'WK',PC:'PC',MK:'MK',AR:'AR'};
   const vals=keys.map(k=> byDom[k].t? (byDom[k].c/byDom[k].t)*100 : 0);
-  const W=ctx.canvas.width, H=ctx.canvas.height, pad=40, gap=30, barW=(W-2*pad - gap*(keys.length-1))/keys.length;
+  const W=w, H=h, pad=40, gap=30, barW=(W-2*pad - gap*(keys.length-1))/keys.length;
   // axes
   ctx.fillStyle='#e9eef5'; ctx.font='14px system-ui';
   ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, H-pad); ctx.lineTo(W-pad, H-pad); ctx.strokeStyle='#233145'; ctx.lineWidth=2; ctx.stroke();
@@ -252,11 +327,11 @@ function drawBarChart(byDom){
     const p=vals[idx];
     const x=pad + idx*(barW+gap);
     const y=H - pad - (p/100)*(H-2*pad);
-    const h=(p/100)*(H-2*pad);
+    const hBar=(p/100)*(H-2*pad);
     // gradient fill (blue-green)
     const g=ctx.createLinearGradient(0,y,0,H-pad);
     g.addColorStop(0,'#2bb673'); g.addColorStop(1,'#3b82f6');
-    ctx.fillStyle=g; ctx.fillRect(x,y,barW,h);
+    ctx.fillStyle=g; ctx.fillRect(x,y,barW,hBar);
     // label
     ctx.fillStyle='#e9eef5'; ctx.textAlign='center';
     ctx.fillText(names[k], x+barW/2, H-pad+18);
@@ -265,7 +340,9 @@ function drawBarChart(byDom){
 }
 
 // ===== ACCESS CODE (client-side hashed) =====
-// Replace with your own SHA-256 hashes of allowed codes
+// IMPORTANT: Client-side hashed codes are easy to inspect and bypass.
+// For production/secure gating, validate codes on the server or use signed short-lived tokens
+// rather than storing hashes in front-end JS.
 const ACCESS_ALLOWED_HASHES = [
   // Example: SHA-256('WEEK43-PRARNG')
   '15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225'
@@ -296,8 +373,8 @@ accessBtn?.addEventListener('click', async ()=>{
   accessBtn.disabled=true; accessMsg.style.display='none';
   try{
     const h=await sha256hex(code);
-    if(ACCESS_ALLOWED_HASHES.includes(h)){
-      if(isExpired(h)){
+    if(ACCESS_ALLOWED_HASHES.includes(h)){ 
+      if(isExpired(h)){ 
         accessMsg.style.display='block'; accessMsg.style.color='#ef4444'; accessMsg.textContent='This code has expired.'; accessBtn.disabled=false; return;
       }
       grantAccess();
