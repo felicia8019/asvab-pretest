@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ASVAB Pre-Test (Dual Codes: Recruiter & Weekly User)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: #0b0f14; color: #e9eef5; margin: 0; }
+    .wrap { max-width: 960px; margin: 2rem auto; padding: 1rem; }
+    .card { background: #121821; border-radius: 16px; padding: 24px; margin-bottom: 1rem; border:1px solid #1e293b; }
+    h1, h2, h3 { margin-top: 0; }
+    button { background: #2563eb; color: #fff; border: none; padding: 12px 16px; border-radius: 10px; cursor: pointer; transition: transform .05s ease; }
+    button:hover { background: #1d4ed8; }
+    button:active { transform: translateY(1px); }
+    .btn-secondary { background:#334155; }
+    .choice { display: block; margin: 0.5rem 0; padding: 0.5rem; background: #1f2937; border-radius: 8px; cursor: pointer; }
+    .correct { background: #14532d; }
+    .wrong { background: #7f1d1d; }
+    .hidden { display: none; }
+    .meter { height: 10px; background: #0f1520; border-radius: 8px; margin-bottom: 1rem; }
+    .meter > i { display: block; height: 100%; background: linear-gradient(90deg, #2bb673, #3b82f6); width: 0%; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { border: 1px solid #233145; padding: 8px; text-align: left; }
+    .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+    @media (max-width: 760px){ .stats{ grid-template-columns: 1fr; } }
+    .tile { background:#0f1520; border:1px solid #233145; border-radius:12px; padding:12px; }
+    .meter-sm{ height:8px; background:#0b1220; border-radius:6px; }
+    .meter-sm>i{ display:block; height:100%; background:linear-gradient(90deg,#2bb673,#3b82f6); width:0%; }
+    canvas{ background:#0f1520; border:1px solid #233145; border-radius:12px; }
+    .tip{ display:inline-flex; align-items:center; gap:6px; margin-left:6px; position:relative; }
+    .tip i{ display:inline-block; width:18px; height:18px; border-radius:50%; background:#1f2937; border:1px solid #334155; text-align:center; line-height:18px; font-style:normal; font-weight:700; font-size:12px; color:#9fb3c8; cursor:default; }
+    .tip .bubble{ position:absolute; left:0; top:130%; width:min(540px,90vw); background:#0b1220; border:1px solid #233145; color:#e9eef5; padding:10px; border-radius:10px; display:none; z-index:5; }
+    .tip:hover .bubble{ display:block; }
+    .btnrow { display:flex; gap:12px; flex-wrap:wrap; margin: 12px 0; }
+    .muted { color:#9fb3c8; }
+    .modeNote{ font-size:.95rem; color:#9fb3c8; }
+
+    /* Animated collapsible review */
+    .collapse { overflow: hidden; max-height: 0; transition: max-height 300ms ease, opacity 300ms ease; opacity: 0; }
+    .collapse.open { opacity: 1; }
+
+    /* Overlay panels */
+    .overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(2,6,23,0.88); z-index:9999; }
+    .panel { background:#0f1520; border:1px solid #233145; padding:20px; border-radius:12px; width:min(560px,94vw); color:#e9eef5; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+    .row { display:flex; gap:8px; flex-wrap:wrap; }
+    input[type=text], input[type=password] { padding:10px; border-radius:8px; border:1px solid #233145; background:#0b1220; color:#e9eef5; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .kicker{ font-size:.95rem; color:#9fb3c8; margin-bottom:8px; }
+  </style>
+</head>
+<body>
+  <!-- ACCESS OVERLAY (Dual buttons) -->
+  <div id="accessOverlay" class="overlay">
+    <div class="panel">
+      <h3 style="margin:0 0 8px">Welcome</h3>
+      <p class="kicker">Choose how to enter:</p>
+      <div class="btnrow">
+        <button id="btnApplicant">Applicant — Enter User Code</button>
+        <button id="btnRecruiter">Recruiter — Admin Access</button>
+      </div>
+      <div id="applicantBox" class="card" style="margin-top:12px; display:none;">
+        <b>Applicant Login</b>
+        <p class="muted">Ask your recruiter for this week’s <b>User Code</b>.</p>
+        <div class="row">
+          <input id="userCodeInput" type="password" placeholder="User Code" style="flex:1;" />
+          <button id="userCodeBtn">Unlock</button>
+        </div>
+        <p id="userMsg" style="color:#f59e0b;margin-top:10px;display:none"></p>
+      </div>
+      <div id="recruiterBox" class="card" style="margin-top:12px; display:none;">
+        <b>Recruiter Admin</b>
+        <p class="muted">Enter the <b>Recruiter Code</b> to view this week’s and next week’s User Codes.</p>
+        <div class="row">
+          <input id="adminCodeInput" type="password" placeholder="Recruiter Code" style="flex:1;" />
+          <button id="adminCodeBtn">Enter</button>
+        </div>
+        <div id="adminPanel" class="hidden" style="margin-top:12px;">
+          <div class="tile" style="margin-bottom:8px;">
+            <div><b>This week’s User Code</b> <small class="muted">(YYYY–WW based)</small></div>
+            <div id="thisWeekCode" class="mono" style="font-size:1.15rem; margin-top:6px;"></div>
+          </div>
+          <div class="tile" style="margin-bottom:8px;">
+            <div><b>Next week’s User Code</b></div>
+            <div id="nextWeekCode" class="mono" style="font-size:1.15rem; margin-top:6px;"></div>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <button id="copyThis">Copy This Week</button>
+            <button id="copyNext">Copy Next Week</button>
+            <button id="bypass">Bypass & Enter App</button>
+          </div>
+          <small class="muted">Share only the <b>User Code</b> with applicants. Keep the <b>Recruiter Code</b> private.</small>
+        </div>
+        <p id="adminMsg" style="color:#f59e0b;margin-top:10px;display:none"></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div id="start" class="card hidden">
+      <h1>ASVAB Pre-Test</h1>
+      <p>This app offers a <b>Short</b> and a <b>Long</b> version:</p>
+      <ul class="muted">
+        <li><b>Short (40)</b>: 10 each from <b>WK</b>, <b>PC</b>, <b>MK</b>, <b>AR</b>.</li>
+        <li><b>Long (65)</b>: Short set above <i>plus</i> 5 each from <b>GS</b>, <b>EI</b>, <b>AS</b>, <b>MC</b>, <b>AO</b>.</li>
+      </ul>
+      <div class="btnrow">
+        <button id="btnShort">Start Short — 40 Q</button>
+        <button id="btnLong">Start Long — 65 Q</button>
+      </div>
+      <div style="margin-top:1rem;">
+        <label><input type="checkbox" id="instantFeedback"> Show feedback after each question</label>
+      </div>
+      <p class="modeNote">Tip: Use keys <b>1–4</b> to answer, <b>N</b> next, <b>B</b> back.</p>
+    </div>
+
+    <div id="quiz" class="card hidden">
+      <div class="meter"><i id="progressBar"></i></div>
+      <h2 id="qText"></h2>
+      <div id="choiceList"></div>
+      <button id="btnPrev">Back</button>
+      <button id="btnNext">Next</button>
+      <p id="feedback"></p>
+    </div>
+
+    <div id="summary" class="card hidden">
+      <h2>Results</h2>
+      <p id="scoreLine"></p>
+      <div id="afqtBox" class="tile" style="margin:12px 0;">
+        <b>Practice AFQT Summary</b>
+        <span class="tip" aria-label="What is AFQT?">
+          <i>i</i>
+          <span class="bubble">
+            <b>AFQT (Armed Forces Qualification Test)</b> is an official percentile based on scaled scores from four subtests: Word Knowledge (WK), Paragraph Comprehension (PC) → combined into VE, plus Arithmetic Reasoning (AR) and Mathematics Knowledge (MK).<br><br>
+            This app shows an <em>unofficial practice index</em> to gauge readiness:<br>
+            <code>Practice AFQT Index = (2 × VE + AR + MK) / 4</code>, where <code>VE = average(WK%, PC%)</code>.
+          </span>
+        </span>
+        <div id="afqtLine" style="margin:6px 0 8px;"></div>
+        <div class="meter-sm"><i id="afqtMeter" style="width:0%"></i></div>
+        <small class="muted">Note: This is an <em>unofficial practice index</em> based on WK/PC (VE), AR, and MK performance. Real AFQT uses scaled scores and official norms.</small>
+      </div>
+
+      <h3>Section Scores</h3>
+      <div id="sectionStats" class="stats" aria-live="polite"></div>
+      <div style="margin-top:12px;">
+        <canvas id="barChart" width="880" height="300" aria-label="Score by section bar chart"></canvas>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin-top:16px;">
+        <button id="btnToggleReview">Show Detailed Review</button>
+        <small class="muted">(Recruiter view; hidden by default)</small>
+      </div>
+      <div id="reviewWrap" class="collapse" aria-hidden="true">
+        <h3 style="margin-top:16px;">Detailed Review</h3>
+        <table>
+          <thead><tr><th>#</th><th>Domain</th><th>Question</th><th>Your Answer</th><th>Correct</th></tr></thead>
+          <tbody id="review"></tbody>
+        </table>
+      </div>
+
+      <div style="margin-top:16px;">
+        <button id="btnRetry">Try Again</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ====== CONFIG ======
+const RECRUITER_HASH = "8a9bcf1e51e812d0af8465a8dbcc9f741064bf0af3b3d08e6b0246437c19f7fb";
+const SITE_TAG = "FSP-Test";
+const ACCEPT_NEXT_WEEK = true;
+
+// ===== QUESTION BANK =====
+const BANK = {
+  WK:[
+    {d:'WK',q:'Select the best synonym for OBLIVIOUS.',c:['Unaware','Careful','Alert','Friendly'],a:0},
+    {d:'WK',q:'Select the word most similar to PERPLEXED.',c:['Confused','Certain','Calm','Sure'],a:0},
+    {d:'WK',q:'Select the antonym for VIGOROUS.',c:['Energetic','Lively','Weak','Active'],a:2},
+    {d:'WK',q:'Choose the synonym for CONCEAL.',c:['Reveal','Hide','Show','Expose'],a:1},
+    {d:'WK',q:'Select the best synonym for HASTY.',c:['Slow','Rushed','Calm','Lazy'],a:1},
+    {d:'WK',q:'Choose the antonym for FRAGILE.',c:['Delicate','Breakable','Strong','Weak'],a:2},
+    {d:'WK',q:'Select the synonym for ABUNDANT.',c:['Scarce','Plentiful','Empty','Small'],a:1},
+    {d:'WK',q:'Select the best synonym for BRIEF.',c:['Lengthy','Short','Detailed','Drawn-out'],a:1},
+    {d:'WK',q:'Choose the synonym for RELUCTANT.',c:['Eager','Willing','Hesitant','Happy'],a:2},
+    {d:'WK',q:'Select the best synonym for IMPEDE.',c:['Help','Block','Promote','Encourage'],a:1}
+  ],
+  PC:[
+    {d:'PC',q:'A passage says: “Proper hydration improves focus.” The main idea is that:',c:['Water causes illness.','Dehydration reduces concentration.','Hydration reduces intelligence.','Focus is unrelated to hydration.'],a:1},
+    {d:'PC',q:'A passage describes how a lever helps lift heavy objects. The main idea is about:',c:['Musical instruments','Mechanical advantage','Human strength','Gravity'],a:1},
+    {d:'PC',q:'A passage states: “Farmers rotate crops yearly to restore soil nutrients.” This means:',c:['Crop rotation harms soil.','Changing crops helps maintain fertility.','Farmers waste land.','Nutrients are unimportant.'],a:1},
+    {d:'PC',q:'If a paragraph explains the water cycle, it is mainly about:',c:['Weather and evaporation','Space travel','Food chains','Wind direction'],a:0},
+    {d:'PC',q:'A paragraph explains that regular study improves memory. The best conclusion is:',c:['Study has no effect.','Practice strengthens recall.','Only rest improves memory.','Memory cannot improve.'],a:1},
+    {d:'PC',q:'If a passage details soldiers’ training improving teamwork, the main idea is:',c:['Training builds cooperation.','Teamwork harms progress.','Individual work is better.','Soldiers train for fitness only.'],a:0},
+    {d:'PC',q:'A paragraph about nutrition focusing on protein intake is mainly about:',c:['Carbohydrates','Exercise','Protein and diet','Water intake'],a:2},
+    {d:'PC',q:'A passage states: “Good sleep enhances cognitive performance.” The conclusion is:',c:['Sleep reduces performance.','Rest has no benefit.','Sleep helps the brain work better.','Cognition is unrelated to sleep.'],a:2},
+    {d:'PC',q:'If a paragraph discusses recycling benefits, its purpose is to:',c:['Discourage recycling.','Explain advantages of recycling.','Describe littering.','Promote deforestation.'],a:1},
+    {d:'PC',q:'A passage about soldiers’ discipline implies that:',c:['Rules reduce order.','Discipline supports effectiveness.','Freedom is harmful.','Training is not required.'],a:1}
+  ],
+  MK:[
+    {d:'MK',q:'Simplify: 2(x + 3) + 4',c:['2x + 7','2x + 6','2x + 10','x + 5'],a:2},
+    {d:'MK',q:'Solve: 5x = 25',c:['10','0','5','1'],a:2},
+    {d:'MK',q:'If y = 2x + 3, find y when x = 4.',c:['7','10','11','8'],a:2},
+    {d:'MK',q:'Find the perimeter of a rectangle 8 by 3.',c:['24','11','16','22'],a:3},
+    {d:'MK',q:'What is the area of a triangle with base 10 and height 4?',c:['40','14','20','24'],a:2},
+    {d:'MK',q:'Simplify: 3(2x − 4) + 2(x + 5)',c:['8x + 2','5x − 2','5x + 2','8x − 2'],a:3},
+    {d:'MK',q:'If a = 4 and b = 3, what is 2a + b?',c:['7','10','11','14'],a:2},
+    {d:'MK',q:'Find x: x/3 = 12',c:['3','6','15','36'],a:3},
+    {d:'MK',q:'What is 9² − 7²?',c:['16','32','36','44'],a:1},
+    {d:'MK',q:'Simplify: (5x + 10) / 5',c:['x + 2','x + 10','x + 5','2x + 10'],a:0}
+  ],
+  AR:[
+    {d:'AR',q:'If 3 pencils cost $1.50, how much for 10?',c:['$4.50','$5.00','$3.00','$6.00'],a:1},
+    {d:'AR',q:'A car travels 180 miles in 3 hours. Average speed?',c:['50 mph','55 mph','60 mph','65 mph'],a:2},
+    {d:'AR',q:'A jacket costs $40 after a 20% discount. Original price?',c:['$48','$50','$60','$45'],a:1},
+    {d:'AR',q:'A recipe for 4 people needs 2 cups of rice. How many cups for 10 people?',c:['4','5','6','8'],a:1},
+    {d:'AR',q:'If you earn $12/hour for 8 hours a day, weekly pay (5 days)?',c:['$420','$460','$480','$500'],a:2},
+    {d:'AR',q:'A machine makes 120 parts in 4 hours. How many in 10 hours?',c:['250','280','300','320'],a:2},
+    {d:'AR',q:'A train moves 90 miles in 1.5 hours. Its average speed is:',c:['45 mph','50 mph','55 mph','60 mph'],a:3},
+    {d:'AR',q:'A shirt is $30 with 15% off. Sale price?',c:['$25.50','$27','$28.50','$26'],a:0},
+    {d:'AR',q:'A worker earns $18/hr and gets a 10% raise. New pay?',c:['$19.80','$20','$18.80','$22'],a:0},
+    {d:'AR',q:'If 5 books cost $45, what’s the price per book?',c:['$7','$8','$9','$10'],a:2}
+  ],
+  GS:[
+    {d:'GS',q:'Water boils at what temperature at sea level (°C)?',c:['50','90','100','120'],a:2},
+    {d:'GS',q:'Humans primarily breathe in which gas?',c:['Oxygen','Carbon dioxide','Nitrogen','Hydrogen'],a:2},
+    {d:'GS',q:'Which organ filters blood to make urine?',c:['Liver','Kidney','Pancreas','Spleen'],a:1},
+    {d:'GS',q:'The Earth orbits the Sun approximately once every:',c:['24 hours','365 days','30 days','12 hours'],a:1},
+    {d:'GS',q:'An atom’s nucleus contains:',c:['Electrons only','Protons and neutrons','Neutrons and electrons','Protons and electrons'],a:1}
+  ],
+  EI:[
+    {d:'EI',q:'In DC circuits, current flows in:',c:['Alternating directions','One direction','Random pulses','No direction'],a:1},
+    {d:'EI',q:'The unit of electrical resistance is:',c:['Volt','Ohm','Ampere','Watt'],a:1},
+    {d:'EI',q:'A device that stores electrical charge is a:',c:['Resistor','Capacitor','Inductor','Diode'],a:1},
+    {d:'EI',q:'A diode allows current to flow primarily in:',c:['Both directions equally','Reverse only','Forward only','Neither direction'],a:2},
+    {d:'EI',q:'Series circuits share the same:',c:['Voltage across each component','Current through all components','Power in each component','Frequency only'],a:1}
+  ],
+  AS:[
+    {d:'AS',q:'Engine oil is checked with the:',c:['Dipstick','Manifold','Radiator cap','Brake pedal'],a:0},
+    {d:'AS',q:'Tires are rotated to:',c:['Increase fuel in tank','Balance wear','Lower engine heat','Tighten belts'],a:1},
+    {d:'AS',q:'A flat-head screwdriver fits which screw?',c:['Phillips','Torx','Slot','Allen'],a:2},
+    {d:'AS',q:'The alternator’s job is to:',c:['Start the engine','Charge the battery','Cool the engine','Filter fuel'],a:1},
+    {d:'AS',q:'Brake pads clamp onto the:',c:['Crankshaft','Radiator','Rotor/Disc','Piston rings'],a:2}
+  ],
+  MC:[
+    {d:'MC',q:'A longer lever provides:',c:['Less mechanical advantage','More mechanical advantage','No change','Negative advantage'],a:1},
+    {d:'MC',q:'Gears are used to:',c:['Store electricity','Transmit torque and change speed','Hold fluids','Reduce friction only'],a:1},
+    {d:'MC',q:'A pulley system can:',c:['Increase required force','Change direction and reduce effort','Generate electricity','Heat objects'],a:1},
+    {d:'MC',q:'Friction generally:',c:['Assists all motion','Opposes motion','Has no effect','Only helps turning'],a:1},
+    {d:'MC',q:'Hydraulic systems use:',c:['Gases under pressure','Solids under tension','Liquids under pressure','Vacuum only'],a:2}
+  ],
+  AO:[
+    {d:'AO',q:'When assembling, aligning holes with pins ensures:',c:['Friction fit only','Proper orientation and alignment','Electrical bonding','Cooling'],a:1},
+    {d:'AO',q:'Exploded diagrams show:',c:['Parts overlapped','Parts separated to show placement','Only finished product','Only tools'],a:1},
+    {d:'AO',q:'If two parts are mirror images, they are:',c:['Identical','Symmetric opposites','Random','Interchangeably identical'],a:1},
+    {d:'AO',q:'A part labeled “A-2L” likely indicates:',c:['Right-hand piece','Left-hand piece','Center piece','Top piece'],a:1},
+    {d:'AO',q:'Best strategy to assemble correctly:',c:['Ignore order','Follow numbered steps','Guess fit','Skip small parts'],a:1}
+  ]
+};
+
+let quiz=[],answers=[],i=0,instant=false, currentMode='short40';
+const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
+
+function pickN(arr,n){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a.slice(0,n); }
+
+function startMode(mode){
+  currentMode = mode;
+  const perMain = 10; // WK/PC/MK/AR
+  const wk = pickN(BANK.WK, perMain);
+  const pc = pickN(BANK.PC, perMain);
+  const mk = pickN(BANK.MK, perMain);
+  const ar = pickN(BANK.AR, perMain);
+  let list = [...wk,...pc,...mk,...ar];
+  if(mode==='long65'){
+    const extras = [
+      ...pickN(BANK.GS,5),
+      ...pickN(BANK.EI,5),
+      ...pickN(BANK.AS,5),
+      ...pickN(BANK.MC,5),
+      ...pickN(BANK.AO,5),
+    ];
+    list = [...list, ...extras];
+  }
+  quiz = list.sort(()=>Math.random()-0.5);
+  answers = Array(quiz.length).fill(null);
+  i=0; instant = $('#instantFeedback').checked;
+  $('#start').classList.add('hidden'); $('#quiz').classList.remove('hidden');
+  render();
+}
+
+function render(){
+  const q=quiz[i]; $('#qText').textContent=`(${q.d}) ${q.q}`;
+  const list=$('#choiceList'); list.innerHTML='';
+  q.c.forEach((ch,idx)=>{
+    const div=document.createElement('div'); div.textContent=ch; div.className='choice';
+    div.onclick=()=>select(idx); if(answers[i]===idx) div.style.outline='2px solid #3b82f6';
+    list.appendChild(div);
+  });
+  $('#progressBar').style.width=((i/quiz.length)*100)+'%'; $('#feedback').textContent='';
+}
+
+function select(idx){
+  answers[i]=idx;
+  if(instant){
+    const q=quiz[i]; const list=$$('#choiceList .choice');
+    list.forEach((el,j)=>{el.classList.remove('correct','wrong');
+      if(j===q.a) el.classList.add('correct'); else if(j===idx) el.classList.add('wrong');});
+    $('#feedback').textContent= idx===q.a ? 'Correct!' : `Incorrect. Correct: ${q.c[q.a]}`;
+  }
+}
+function next(){ if(i<quiz.length-1){i++; render();} else finish(); }
+function prev(){ if(i>0){i--; render();} }
+
+function finish(){
+  let correct=0; const tbody=$('#review'); tbody.innerHTML='';
+  const sections = ['WK','PC','MK','AR','GS','EI','AS','MC','AO'];
+  const byDom={}; sections.forEach(s=>byDom[s]={t:0,c:0});
+  quiz.forEach((q,k)=>{
+    const a=answers[k]; const ok=a===q.a; if(ok) correct++;
+    if(byDom[q.d]){ byDom[q.d].t++; if(ok) byDom[q.d].c++; }
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${k+1}</td><td>${q.d}</td><td>${q.q}</td><td>${a!=null?q.c[a]:''}</td><td>${q.c[q.a]}</td>`;
+    tbody.appendChild(tr);
+  });
+  const pct=Math.round(correct/quiz.length*100);
+  const modeName = currentMode==='long65' ? 'Long (65)' : 'Short (40)';
+  $('#scoreLine').textContent=`Mode: ${modeName} — You got ${correct}/${quiz.length} correct (${pct}%).`;
+
+  const statsWrap=$('#sectionStats'); statsWrap.innerHTML='';
+  const labels={
+    WK:'Word Knowledge', PC:'Paragraph Comprehension', MK:'Mathematics Knowledge', AR:'Arithmetic Reasoning',
+    GS:'General Science', EI:'Electronics Info', AS:'Auto & Shop', MC:'Mechanical Comp.', AO:'Assembling Objects'
+  };
+  const percents={};
+  Object.keys(labels).forEach(k=>{
+    const s=byDom[k]; if(!s || s.t===0) return;
+    const p=Math.round(100*s.c/s.t); percents[k]=p;
+    const div=document.createElement('div'); div.className='tile';
+    div.innerHTML=`<b>${labels[k]} (${k})</b><br><small>${s.c}/${s.t} correct</small>
+      <div class="meter-sm" style="margin-top:6px;"><i style="width:${p}%"></i></div>`;
+    statsWrap.appendChild(div);
+  });
+
+  // Practice AFQT (WK, PC, AR, MK only)
+  const VE = (((percents.WK||0) + (percents.PC||0)) / 2);
+  const AFQT_index = Math.round( (2*VE + (percents.AR||0) + (percents.MK||0)) / 4 );
+  let band;
+  if (AFQT_index >= 75) band = 'Excellent (Category I–IIA range)';
+  else if (AFQT_index >= 60) band = 'Strong (approx. Cat IIA–IIB)';
+  else if (AFQT_index >= 45) band = 'Moderate (approx. Cat IIB–IIIA)';
+  else if (AFQT_index >= 31) band = 'Developing (approx. Cat IIIA threshold)';
+  else band = 'Needs Work (Below Cat IIIA)';
+  $('#afqtLine').innerHTML = `Estimated practice AFQT index: <b>${AFQT_index}</b>% — <span>${band}</span>`;
+  $('#afqtMeter').style.width = AFQT_index + '%';
+
+  drawBarChart(byDom, labels);
+  $('#quiz').classList.add('hidden'); $('#summary').classList.remove('hidden');
+}
+
+function drawBarChart(byDom, labels){
+  const ctx=$('#barChart').getContext('2d');
+  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+  const keys=Object.keys(labels).filter(k=>byDom[k] && byDom[k].t>0);
+  const W=ctx.canvas.width, H=ctx.canvas.height, pad=40, gap=18;
+  const barW=(W-2*pad - gap*(keys.length-1))/keys.length;
+  ctx.fillStyle='#e9eef5'; ctx.font='13px system-ui';
+  ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, H-pad); ctx.lineTo(W-pad, H-pad); ctx.strokeStyle='#233145'; ctx.lineWidth=2; ctx.stroke();
+  for(let y=0;y<=100;y+=20){
+    const yy = H - pad - (y/100)*(H-2*pad);
+    ctx.fillStyle='#9fb3c8'; ctx.fillText(y+'%', 6, yy+4);
+    ctx.beginPath(); ctx.moveTo(pad, yy); ctx.lineTo(W-pad, yy); ctx.strokeStyle='rgba(35,49,69,0.6)'; ctx.lineWidth=1; ctx.stroke();
+  }
+  keys.forEach((k,idx)=>{
+    const p = byDom[k].t? (byDom[k].c/byDom[k].t)*100 : 0;
+    const x=pad + idx*(barW+gap);
+    const y=H - pad - (p/100)*(H-2*pad);
+    const h=(p/100)*(H-2*pad);
+    const g=ctx.createLinearGradient(0,y,0,H-pad);
+    g.addColorStop(0,'#2bb673'); g.addColorStop(1,'#3b82f6');
+    ctx.fillStyle=g; ctx.fillRect(x,y,barW,h);
+    ctx.fillStyle='#e9eef5'; ctx.textAlign='center';
+    ctx.fillText(k, x+barW/2, H-pad+18);
+    ctx.fillText(Math.round(p)+'%', x+barW/2, y-6);
+  });
+}
+
+// ===== Utilities =====
+async function sha256hex(str){
+  const enc=new TextEncoder(); const data=enc.encode(str);
+  const buf=await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function isoWeek(date){
+  const d=new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = d.getUTCDay()||7; d.setUTCDate(d.getUTCDate()+4-day);
+  const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));
+  const week=Math.ceil((((d-yearStart)/86400000)+1)/7);
+  return {year:d.getUTCFullYear(), week:week};
+}
+async function recruiterOk(input){ return await sha256hex(input) === RECRUITER_HASH; }
+async function userCodeFor(offsetWeeks=0){
+  const now=new Date(); const target = new Date(now.getTime()+offsetWeeks*7*86400000);
+  const w=isoWeek(target);
+  const material = SITE_TAG + ':' + w.year + '-W' + String(w.week).padStart(2,'0');
+  const h=await sha256hex(material);
+  const num = (parseInt(h.slice(0,12),16) % 1000000000).toString().padStart(9,'0'); // 9-digit
+  return {code:num, label:`${w.year}-W${String(w.week).padStart(2,'0')}`};
+}
+
+function grantAccess(){ document.getElementById('accessOverlay').style.display='none'; sessionStorage.setItem('asvab_access_ok','1'); }
+
+// ===== Overlay logic =====
+window.addEventListener('load', ()=>{
+  if(sessionStorage.getItem('asvab_access_ok')==='1') document.getElementById('accessOverlay').style.display='none';
+
+  const btnApplicant = document.getElementById('btnApplicant');
+  const btnRecruiter = document.getElementById('btnRecruiter');
+  const applicantBox = document.getElementById('applicantBox');
+  const recruiterBox = document.getElementById('recruiterBox');
+  const userCodeBtn = document.getElementById('userCodeBtn');
+  const userCodeInput = document.getElementById('userCodeInput');
+  const userMsg = document.getElementById('userMsg');
+  const adminCodeBtn = document.getElementById('adminCodeBtn');
+  const adminCodeInput = document.getElementById('adminCodeInput');
+  const adminPanel = document.getElementById('adminPanel');
+  const adminMsg = document.getElementById('adminMsg');
+  const thisWeekCode = document.getElementById('thisWeekCode');
+  const nextWeekCode = document.getElementById('nextWeekCode');
+  const copyThis = document.getElementById('copyThis');
+  const copyNext = document.getElementById('copyNext');
+  const bypass = document.getElementById('bypass');
+
+  btnApplicant.addEventListener('click', ()=>{ applicantBox.style.display='block'; recruiterBox.style.display='none'; });
+  btnRecruiter.addEventListener('click', ()=>{ recruiterBox.style.display='block'; applicantBox.style.display='none'; });
+
+  userCodeBtn.addEventListener('click', async ()=>{
+    const v=(userCodeInput.value||'').trim(); if(!v){ userMsg.style.display='block'; userMsg.textContent='Enter your code.'; return; }
+    const cur=await userCodeFor(0); const ok1 = (v===cur.code);
+    let ok = ok1;
+    if(!ok1 && ACCEPT_NEXT_WEEK){ const nxt=await userCodeFor(1); ok = (v===nxt.code); }
+    if(ok){ grantAccess(); } else { userMsg.style.display='block'; userMsg.style.color='#ef4444'; userMsg.textContent='Invalid or expired code. Ask your recruiter for the current code.'; }
+  });
+
+  adminCodeBtn.addEventListener('click', async ()=>{
+    const v=(adminCodeInput.value||'').trim(); if(!v){ adminMsg.style.display='block'; adminMsg.textContent='Enter the recruiter code.'; return; }
+    if(await recruiterOk(v)){
+      adminMsg.style.display='none'; adminPanel.classList.remove('hidden');
+      const cur=await userCodeFor(0); const nxt=await userCodeFor(1);
+      thisWeekCode.textContent = cur.code + '  ('+cur.label+')';
+      nextWeekCode.textContent = nxt.code + '  ('+nxt.label+')';
+      copyThis.onclick = ()=>{ navigator.clipboard.writeText(cur.code); };
+      copyNext.onclick = ()=>{ navigator.clipboard.writeText(nxt.code); };
+      bypass.onclick = ()=>{ grantAccess(); };
+    } else { adminMsg.style.display='block'; adminMsg.style.color='#ef4444'; adminMsg.textContent='Incorrect recruiter code.'; }
+  });
+
+  // Review toggle
+  const wrap = document.getElementById('reviewWrap');
+  const btn = document.getElementById('btnToggleReview');
+  const setCollapseOpen=(el, open)=>{ if(!el) return; if(open){ el.classList.add('open'); el.style.maxHeight=el.scrollHeight+'px'; el.setAttribute('aria-hidden','false'); } else { el.style.maxHeight=el.scrollHeight+'px'; requestAnimationFrame(()=>{ el.classList.remove('open'); el.style.maxHeight='0px'; el.setAttribute('aria-hidden','true'); }); } };
+  if(wrap && btn){ setCollapseOpen(wrap,false); btn.addEventListener('click', ()=>{ const isClosed = wrap.getAttribute('aria-hidden') !== 'false'; setCollapseOpen(wrap, isClosed); btn.textContent = isClosed ? 'Hide Detailed Review' : 'Show Detailed Review'; }); }
+
+  // Keyboard shortcuts inside quiz
+  document.addEventListener('keydown', (e)=>{
+    if(document.getElementById('quiz').classList.contains('hidden')) return;
+    if(['1','2','3','4'].includes(e.key)){ select(parseInt(e.key,10)-1); }
+    if(e.key.toLowerCase()==='n') next();
+    if(e.key.toLowerCase()==='b') prev();
+  });
+});
+
+// ===== Buttons for quiz modes =====
+$('#btnShort').onclick = ()=>startMode('short40');
+$('#btnLong').onclick  = ()=>startMode('long65');
+$('#btnNext').onclick = next;
+$('#btnPrev').onclick = prev;
+$('#btnRetry').onclick = ()=>{ location.reload(); };
+</script>
+</body>
+</html>
