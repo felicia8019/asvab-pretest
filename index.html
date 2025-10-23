@@ -1,0 +1,2397 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+ASVAB Practice App — Update‑Safe Template
+Do‑not‑rename IDs/classes (treat as public API):
+  #home, #recruiter, #applicant, #login-card, #recruiterPass, #loginBtn, #recruiterLoginMsg, #gen-code,
+  #appCode, #appMsg, #codes-tbody, #results-tbody, #runner, #submitBtn, #saveNextBtn, #prevBtn,
+  #subject-badge, #qnum, #qtotal, #qtext, #choices, #progress-bar, #afqt-bar, #afqt-val, .hidden
+
+SAFE EXTENSION ZONES (ok to edit/add inside these markers; core logic will not be touched):
+  <!-- BEGIN:EXT_STYLES --> ... <!-- END:EXT_STYLES -->
+  <!-- BEGIN:EXT_COMPONENTS --> ... <!-- END:EXT_COMPONENTS -->
+  <!-- BEGIN:EXT_LOGIC --> ... 
+<script>
+(function(){
+  // RSID validation: require RSID before generating applicant codes
+  function requireRSIDBeforeGenerate(){
+    var genBtn = document.getElementById('gen-code');
+    var rsid = document.getElementById('rsid');
+    var msg = document.getElementById('rsidMsg');
+    if (!genBtn || !rsid) return;
+
+    if (genBtn._rsidHooked) return;
+    genBtn.addEventListener('click', function(e){
+      var val = (rsid.value || '').trim();
+      if (!val){
+        e.preventDefault();
+        if (msg) msg.textContent = 'Please enter your Recruiter ID (RSID).';
+        rsid && rsid.focus();
+        return false;
+      }
+      if (msg) msg.textContent = '';
+      // Optionally attach RSID to the button for downstream code to read
+      // without changing existing generation logic.
+      genBtn.dataset.rsid = val;
+    });
+    genBtn._rsidHooked = true;
+  }
+  window.addEventListener('DOMContentLoaded', requireRSIDBeforeGenerate);
+  window.addEventListener('hashchange', requireRSIDBeforeGenerate);
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+
+  // LocalStorage map of code -> RSID
+  const MAP_KEY = 'asvab_rsid_map';
+  function loadMap(){
+    try { return JSON.parse(localStorage.getItem(MAP_KEY) || '{}'); } catch(e){ return {}; }
+  }
+  function saveMap(map){
+    try { localStorage.setItem(MAP_KEY, JSON.stringify(map)); } catch(e){}
+  }
+
+  // Helper: find column index by header label (case-insensitive, trimmed)
+  function getColIndex(table, label){
+    const ths = table.querySelectorAll('thead th');
+    label = (label||'').toLowerCase().trim();
+    for (let i=0;i<ths.length;i++){
+      if ((ths[i].textContent||'').toLowerCase().trim() === label) return i;
+    }
+    return -1;
+  }
+
+  // Ensure the RSID header exists (idempotent safety)
+  function ensureHeaders(){
+    const codesTable = document.querySelector('#recruiter table'); // first table is codes (per template)
+    const resultsTable = document.querySelector('#recruiter .card + .card table'); // second table is results
+    if (codesTable){
+      if (getColIndex(codesTable,'RSID') === -1){
+        const th = document.createElement('th'); th.textContent = 'RSID';
+        const codeIdx = getColIndex(codesTable,'Code');
+        const row = codesTable.querySelector('thead tr');
+        if (row && codeIdx >= 0){
+          row.insertBefore(th, row.children[codeIdx+1] || null);
+        }
+      }
+    }
+    if (resultsTable){
+      if (getColIndex(resultsTable,'RSID') === -1){
+        const th = document.createElement('th'); th.textContent = 'RSID';
+        const codeIdx = getColIndex(resultsTable,'Code');
+        const row = resultsTable.querySelector('thead tr');
+        if (row && codeIdx >= 0){
+          row.insertBefore(th, row.children[codeIdx+1] || null);
+        }
+      }
+    }
+  }
+
+  // Observe codes table: when new code row is added, inject RSID cell and persist mapping
+  function setupCodesObserver(){
+    const codesTable = document.querySelector('#recruiter table');
+    const tbody = document.getElementById('codes-tbody');
+    if (!codesTable || !tbody) return;
+    const codeIdx = getColIndex(codesTable,'Code');
+    const rsidIdx = getColIndex(codesTable,'RSID');
+    const map = loadMap();
+
+    const obs = new MutationObserver((mutations)=>{
+      mutations.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType === 1 && node.tagName === 'TR'){
+            const tds = node.querySelectorAll('td');
+            if (!tds || tds.length === 0) return;
+            const codeCell = (codeIdx >=0 ? tds[codeIdx] : tds[0]);
+            const code = (codeCell && codeCell.textContent || '').trim();
+
+            // Get current RSID from input or from last stored on button
+            const rsidInput = document.getElementById('rsid');
+            let rsidVal = (rsidInput && rsidInput.value || '').trim();
+            if (!rsidVal){
+              // also try dataset on gen-btn if previously set
+              const genBtn = document.getElementById('gen-code');
+              rsidVal = (genBtn && genBtn.dataset && genBtn.dataset.rsid || '').trim();
+            }
+
+            // Insert RSID cell at rsidIdx (right after Code), or append if not resolved
+            const newTd = document.createElement('td');
+            newTd.textContent = rsidVal || '';
+            if (rsidIdx >= 0){
+              // If the generator already created a full row (without RSID), insert at position
+              if (node.children.length > rsidIdx){
+                node.insertBefore(newTd, node.children[rsidIdx]);
+              } else {
+                node.appendChild(newTd);
+              }
+            } else {
+              node.appendChild(newTd);
+            }
+
+            // Persist code -> RSID mapping
+            if (code && rsidVal){
+              map[code] = rsidVal;
+              saveMap(map);
+            }
+          }
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  // Observe results table: when a new result row is added, inject RSID from mapping (by Code)
+  function setupResultsObserver(){
+    const resultsCard = document.querySelector('#recruiter .card + .card');
+    if (!resultsCard) return;
+    const table = resultsCard.querySelector('table');
+    const tbody = resultsCard.querySelector('#results-tbody');
+    if (!table || !tbody) return;
+
+    const codeIdx = getColIndex(table, 'Code');
+    const rsidIdx = getColIndex(table, 'RSID');
+
+    const obs = new MutationObserver((mutations)=>{
+      const map = loadMap();
+      mutations.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType === 1 && node.tagName === 'TR'){
+            const cells = node.querySelectorAll('td');
+            if (!cells || cells.length === 0) return;
+            const codeCell = (codeIdx >= 0 ? cells[codeIdx] : cells[1] || cells[0]);
+            const code = (codeCell && codeCell.textContent || '').trim();
+
+            const rsid = (code && map[code]) ? map[code] : '';
+            const newTd = document.createElement('td');
+            newTd.textContent = rsid;
+
+            if (rsidIdx >= 0){
+              if (node.children.length > rsidIdx){
+                node.insertBefore(newTd, node.children[rsidIdx]);
+              } else {
+                node.appendChild(newTd);
+              }
+            } else {
+              node.appendChild(newTd);
+            }
+          }
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  // Initialize after DOM loads and when hash changes (future nav)
+  function initRSIDEnhancements(){
+    ensureHeaders();
+    setupCodesObserver();
+    setupResultsObserver();
+  }
+  window.addEventListener('DOMContentLoaded', initRSIDEnhancements);
+  window.addEventListener('hashchange', initRSIDEnhancements);
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+
+  const MAP_KEY = 'asvab_rsid_map'; // code -> RSID (letters tag)
+
+  function loadMap(){
+    try { return JSON.parse(localStorage.getItem(MAP_KEY) || '{}'); } catch(e){ return {}; }
+  }
+  function saveMap(m){
+    try { localStorage.setItem(MAP_KEY, JSON.stringify(m)); } catch(e){}
+  }
+
+  function getColIndex(table, label){
+    const ths = table.querySelectorAll('thead th');
+    const want = (label||'').toLowerCase().trim();
+    for (let i=0;i<ths.length;i++){
+      if ((ths[i].textContent||'').toLowerCase().trim() === want) return i;
+    }
+    return -1;
+  }
+
+  // Ensure headers include RSID (after Code) without duplicating
+  function ensureHeaders(){
+    const codesTable = document.querySelector('#recruiter table');
+    const resultsTable = document.querySelector('#recruiter .card + .card table');
+    if (codesTable){
+      if (getColIndex(codesTable, 'RSID') === -1){
+        const row = codesTable.querySelector('thead tr');
+        const th = document.createElement('th'); th.textContent = 'RSID';
+        const codeIdx = getColIndex(codesTable, 'Code');
+        row && row.insertBefore(th, row.children[codeIdx+1] || null);
+      }
+    }
+    if (resultsTable){
+      if (getColIndex(resultsTable, 'RSID') === -1){
+        const row = resultsTable.querySelector('thead tr');
+        const th = document.createElement('th'); th.textContent = 'RSID';
+        const codeIdx = getColIndex(resultsTable, 'Code');
+        row && row.insertBefore(th, row.children[codeIdx+1] || null);
+      }
+    }
+  }
+
+  // Backfill: make sure each existing row has a TD at RSID index (insert empty if missing)
+  function backfillEmptyRSIDCells(){
+    const tables = [
+      document.querySelector('#recruiter table'),
+      document.querySelector('#recruiter .card + .card table')
+    ];
+    tables.forEach(table => {
+      if (!table) return;
+      const rsidIdx = getColIndex(table, 'RSID');
+      if (rsidIdx === -1) return;
+      const rows = table.querySelectorAll('tbody tr');
+      rows.forEach(tr => {
+        if (tr.children.length <= rsidIdx){
+          const td = document.createElement('td');
+          td.textContent = ''; // keep blank to avoid shifting data
+          // Insert at RSID index (or append)
+          if (tr.children.length > rsidIdx){
+            tr.insertBefore(td, tr.children[rsidIdx]);
+          } else {
+            tr.appendChild(td);
+          }
+        }
+      });
+    });
+  }
+
+  // Insert RSID into the designated column only if currently empty; do not rewrite.
+  function setRSIDCellOnce(row, table, rsidValue){
+    const rsidIdx = getColIndex(table, 'RSID');
+    if (rsidIdx === -1) return;
+    // Ensure the cell exists
+    if (row.children.length <= rsidIdx){
+      const td = document.createElement('td');
+      td.textContent = '';
+      row.appendChild(td);
+    }
+    const cell = row.children[rsidIdx];
+    if (!cell.textContent.trim()){
+      cell.textContent = rsidValue || '';
+    }
+  }
+
+  function setupCodesObserver(){
+    const table = document.querySelector('#recruiter table');
+    const tbody = document.getElementById('codes-tbody');
+    if (!table || !tbody) return;
+    const codeIdx = getColIndex(table, 'Code');
+
+    const obs = new MutationObserver(muts => {
+      const map = loadMap();
+      const rsidInput = document.getElementById('rsid');
+      const genBtn = document.getElementById('gen-code');
+      const currentRSID = ((rsidInput && rsidInput.value) || (genBtn && genBtn.dataset && genBtn.dataset.rsid) || '').trim();
+
+      muts.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType !== 1 || node.tagName !== 'TR') return;
+          const tds = node.querySelectorAll('td');
+          if (!tds.length) return;
+          const code = (tds[codeIdx]?.textContent || '').trim();
+
+          // Determine RSID for this code: prefer stored; else use current input once
+          const rsid = (code && map[code]) ? map[code] : currentRSID;
+          setRSIDCellOnce(node, table, rsid);
+
+          // Persist only for new codes with a provided RSID
+          if (code && rsid && !map[code]){
+            map[code] = rsid;
+            saveMap(map);
+          }
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  function setupResultsObserver(){
+    const card = document.querySelector('#recruiter .card + .card');
+    if (!card) return;
+    const table = card.querySelector('table');
+    const tbody = card.querySelector('#results-tbody');
+    if (!table || !tbody) return;
+    const codeIdx = getColIndex(table, 'Code');
+
+    const obs = new MutationObserver(muts => {
+      const map = loadMap();
+      muts.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType !== 1 || node.tagName !== 'TR') return;
+          const tds = node.querySelectorAll('td');
+          if (!tds.length) return;
+          const code = (tds[codeIdx]?.textContent || '').trim();
+          const rsid = (code && map[code]) ? map[code] : '';
+          setRSIDCellOnce(node, table, rsid);
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  function initRSIDStable(){
+    ensureHeaders();
+    backfillEmptyRSIDCells(); // keeps existing data aligned
+    setupCodesObserver();
+    setupResultsObserver();
+  }
+
+  window.addEventListener('DOMContentLoaded', initRSIDStable);
+  window.addEventListener('hashchange', initRSIDStable);
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+
+  // Insert a "Line Scores" column after AFQT% in the Latest Results table
+  function ensureLineScoresHeader(){
+    const resultsCard = document.querySelector('#recruiter .card + .card');
+    if (!resultsCard) return;
+    const table = resultsCard.querySelector('table');
+    if (!table) return;
+    const ths = table.querySelectorAll('thead th');
+    const hasHeader = Array.from(ths).some(th => (th.textContent||'').trim().toLowerCase() === 'line scores');
+    if (!hasHeader){
+      const row = table.querySelector('thead tr');
+      const afqtIdx = Array.from(ths).findIndex(th => (th.textContent||'').trim().toLowerCase() === 'afqt%');
+      const th = document.createElement('th'); th.textContent = 'Line Scores';
+      if (afqtIdx >= 0){
+        row.insertBefore(th, row.children[afqtIdx+1] || null);
+      } else {
+        row.appendChild(th);
+      }
+    }
+  }
+
+  function getColIndex(table, label){
+    const ths = table.querySelectorAll('thead th');
+    const want = (label||'').toLowerCase().trim();
+    for (let i=0;i<ths.length;i++){
+      if ((ths[i].textContent||'').toLowerCase().trim() === want) return i;
+    }
+    return -1;
+  }
+
+  // Compute Army line scores from subtest percentages
+  function computeLineScores(sub){
+    // sub: {WK, PC, AR, MK, GS, EI, AS, MC} as integers (0-100)
+    const toInt = v => Math.max(0, Math.round(Number(v||0)));
+    const WK = toInt(sub.WK), PC = toInt(sub.PC), AR = toInt(sub.AR), MK = toInt(sub.MK);
+    const GS = toInt(sub.GS), EI = toInt(sub.EI), AS = toInt(sub.AS), MC = toInt(sub.MC);
+    const VE = WK + PC;
+
+    const scores = {
+      CL: VE + AR + MK,
+      CO: AR + AS + MC,
+      EL: GS + AR + MK + EI,
+      FA: AR + MK + MC,
+      GM: GS + AS + MK + EI,
+      GT: VE + AR,
+      MM: AS + MC + EI,
+      OF: VE + AS + MC,
+      SC: VE + AR + AS + MC,
+      ST: GS + VE + MK + MC,
+    };
+    return scores;
+  }
+
+  // Render compact string like "CL 180 | CO 210 | ..."
+  function formatLineScores(scores){
+    const order = ['CL','CO','EL','FA','GM','GT','MM','OF','SC','ST'];
+    return order.map(k => k + ' ' + (scores[k] ?? '—')).join(' | ');
+  }
+
+  // Find the row's code and test mode using the table cells
+  function extractRowInfo(row, table){
+    const codeIdx = getColIndex(table, 'Code');
+    const testIdx = getColIndex(table, 'Test');
+    const code = (row.children[codeIdx]?.textContent || '').trim();
+    const testText = (row.children[testIdx]?.textContent || '').toLowerCase();
+    const isFull = testText.includes('full'); // Full (225)
+    return { code, isFull };
+  }
+
+  // Lookup the result object in localStorage by code
+  function findResultByCode(code){
+    try {
+      const rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]');
+      return rows.find(r => (r && (r.code||'').toString().trim() === code));
+    } catch(e){ return null; }
+  }
+
+  function ensureLineScoresCell(row, table){
+    const lineIdx = getColIndex(table, 'Line Scores');
+    // Ensure the cell exists
+    if (row.children.length <= lineIdx){
+      const td = document.createElement('td');
+      td.textContent = '';
+      row.appendChild(td);
+    }
+    return row.children[lineIdx];
+  }
+
+  function processRow(row, table){
+    const { code, isFull } = extractRowInfo(row, table);
+    if (!code || !isFull) return; // Only for Full (225) results
+    const cell = ensureLineScoresCell(row, table);
+    if (cell.textContent.trim()) return; // don't overwrite if already filled
+
+    const result = findResultByCode(code);
+    if (!result || !result.sub) return;
+    const scores = computeLineScores(result.sub);
+    cell.textContent = formatLineScores(scores);
+  }
+
+  function setupResultsObserver(){
+    const resultsCard = document.querySelector('#recruiter .card + .card');
+    if (!resultsCard) return;
+    const table = resultsCard.querySelector('table');
+    const tbody = resultsCard.querySelector('#results-tbody');
+    if (!table || !tbody) return;
+
+    // Process any existing rows (in case results are already rendered)
+    ensureLineScoresHeader();
+    Array.from(tbody.querySelectorAll('tr')).forEach(tr => processRow(tr, table));
+
+    const obs = new MutationObserver(muts => {
+      ensureLineScoresHeader();
+      muts.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType === 1 && node.tagName === 'TR'){
+            processRow(node, table);
+          }
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  window.addEventListener('DOMContentLoaded', setupResultsObserver);
+  window.addEventListener('hashchange', setupResultsObserver);
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+
+  // Create a summary container after AFQT box (applicant view) without touching existing markup
+  function ensureApplicantLineScoresBox(){
+    const summary = document.getElementById('applicant-summary');
+    if (!summary) return;
+    if (!document.getElementById('applicant-line-scores')){
+      const box = document.createElement('div');
+      box.id = 'applicant-line-scores';
+      box.className = 'card hidden';
+      box.innerHTML = '<h3>Army Line Scores (Full test)</h3><div id="line-scores-content" class="note">—</div>';
+      // Insert after applicant-summary
+      summary.parentNode.insertBefore(box, summary.nextSibling);
+    }
+  }
+
+  function computeLineScores(sub){
+    const toInt = v => Math.max(0, Math.round(Number(v||0)));
+    const WK = toInt(sub.WK), PC = toInt(sub.PC), AR = toInt(sub.AR), MK = toInt(sub.MK);
+    const GS = toInt(sub.GS), EI = toInt(sub.EI), AS = toInt(sub.AS), MC = toInt(sub.MC);
+    const VE = WK + PC;
+    return {
+      CL: VE + AR + MK,
+      CO: AR + AS + MC,
+      EL: GS + AR + MK + EI,
+      FA: AR + MK + MC,
+      GM: GS + AS + MK + EI,
+      GT: VE + AR,
+      MM: AS + MC + EI,
+      OF: VE + AS + MC,
+      SC: VE + AR + AS + MC,
+      ST: GS + VE + MK + MC,
+    };
+  }
+
+  function formatLineScores(scores){
+    const order = ['CL','CO','EL','FA','GM','GT','MM','OF','SC','ST'];
+    return order.map(k => k + ' ' + (scores[k] ?? '—')).join(' | ');
+  }
+
+  function renderApplicantLineScoresFromLast(){
+    ensureApplicantLineScoresBox();
+    const box = document.getElementById('applicant-line-scores');
+    const content = document.getElementById('line-scores-content');
+    if (!box || !content) return;
+
+    // Read the most recent result inserted by submitTest()
+    let rows = [];
+    try { rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]'); } catch(e){}
+    const r = rows && rows[0];
+    if (r && (r.mode === 'full' || (r.test||'').toLowerCase().includes('full')) && r.sub){
+      const scores = computeLineScores(r.sub);
+      content.textContent = formatLineScores(scores);
+      box.classList.remove('hidden');
+    } else {
+      box.classList.add('hidden');
+    }
+  }
+
+  // Wrap submitTest non-invasively: call original, then render line scores
+  window.addEventListener('DOMContentLoaded', function(){
+    ensureApplicantLineScoresBox();
+    if (typeof window.submitTest === 'function' && !window._submitTestWrapped){
+      const _orig = window.submitTest;
+      window.submitTest = function(){
+        const out = _orig.apply(this, arguments);
+        try { renderApplicantLineScoresFromLast(); } catch(e){ console.warn('Line scores render failed', e); }
+        return out;
+      };
+      window._submitTestWrapped = true;
+    }
+  });
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+
+  // Ensure a compact "Subtest Scores" card after AFQT (applicant view)
+  function ensureApplicantSubtestsBox(){
+    const summary = document.getElementById('applicant-summary');
+    if (!summary) return;
+    if (!document.getElementById('applicant-subtests')){
+      const box = document.createElement('div');
+      box.id = 'applicant-subtests';
+      box.className = 'card hidden';
+      box.innerHTML = [
+        '<h3>Subtest Scores (AFQT subjects)</h3>',
+        '<div class="note">Shown for all test modes</div>',
+        '<div style="margin-top:8px">',
+          '<table style="width:100%;border-collapse:separate;border-spacing:0 6px">',
+            '<tbody>',
+              '<tr><td class="note">Arithmetic Reasoning (AR)</td><td id="sc-ar"><strong>—</strong></td></tr>',
+              '<tr><td class="note">Mathematics Knowledge (MK)</td><td id="sc-mk"><strong>—</strong></td></tr>',
+              '<tr><td class="note">Word Knowledge (WK)</td><td id="sc-wk"><strong>—</strong></td></tr>',
+              '<tr><td class="note">Paragraph Comprehension (PC)</td><td id="sc-pc"><strong>—</strong></td></tr>',
+              '<tr><td class="note">VE (WK + PC)</td><td id="sc-ve"><strong>—</strong></td></tr>
+              <tr><td class="note">ST (line score)</td><td id="sc-st"><strong>—</strong></td></tr>',
+            '</tbody>',
+          '</table>',
+        '</div>'
+      ].join('');
+      summary.parentNode.insertBefore(box, summary.nextSibling);
+    }
+  }
+
+  function toInt(v){ return Math.max(0, Math.round(Number(v||0))); }
+
+  function renderApplicantSubtestsFromLast(){
+    ensureApplicantSubtestsBox();
+    const box = document.getElementById('applicant-subtests');
+    const arEl = document.getElementById('sc-ar');
+    const mkEl = document.getElementById('sc-mk');
+    const wkEl = document.getElementById('sc-wk');
+    const pcEl = document.getElementById('sc-pc');
+    const veEl = document.getElementById('sc-ve');
+    if (!box || !arEl || !mkEl || !wkEl || !pcEl || !veEl) return;
+
+    // Read the most recent result inserted by submitTest()
+    let rows = [];
+    try { rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]'); } catch(e){}
+    const r = rows && rows[0];
+
+    if (!r || !r.sub){
+      // nothing to show
+      box.classList.add('hidden');
+      return;
+    }
+
+    const sub = r.sub || {};
+    const AR = toInt(sub.AR);
+    const MK = toInt(sub.MK);
+    const WK = toInt(sub.WK);
+    const PC = toInt(sub.PC);
+    const VE = toInt(WK) + toInt(PC);
+
+    // Render values (use em-dash for missing)
+    function fmt(x){ return (isFinite(x) && x > 0) ? (x + '%') : '—'; }
+    arEl.innerHTML = '<strong>' + fmt(AR) + '</strong>';
+    mkEl.innerHTML = '<strong>' + fmt(MK) + '</strong>';
+    wkEl.innerHTML = '<strong>' + fmt(WK) + '</strong>';
+    pcEl.innerHTML = '<strong>' + fmt(PC) + '</strong>';
+    veEl.innerHTML = '<strong>' + ( (isFinite(VE) && (WK || PC)) ? VE : '—' ) + '</strong>';
+
+    // Show for all test modes (short/core/full)
+    box.classList.remove('hidden');
+  }
+
+  // Observe when the applicant summary becomes visible, then render subtests.
+  function setupApplicantObserver(){
+    const app = document.getElementById('applicant');
+    const summary = document.getElementById('applicant-summary');
+    if (!app || !summary) return;
+
+    // Initial ensure
+    ensureApplicantSubtestsBox();
+
+    const obs = new MutationObserver(()=>{
+      // if summary is visible (not hidden), attempt to render
+      if (!summary.classList.contains('hidden')){
+        try { renderApplicantSubtestsFromLast(); } catch(e){ console.warn('Subtests render failed', e); }
+      }
+    });
+    obs.observe(app, { attributes:true, childList:true, subtree:true });
+  }
+
+  window.addEventListener('DOMContentLoaded', function(){
+    // Try rendering once on load (in case a result is already on screen)
+    try { renderApplicantSubtestsFromLast(); } catch(e){}
+    setupApplicantObserver();
+  });
+  window.addEventListener('hashchange', function(){
+    // Re-run on route-ish changes
+    try { renderApplicantSubtestsFromLast(); } catch(e){}
+  });
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+
+  // Utilities
+  function toInt(v){ return Math.max(0, Math.round(Number(v||0))); }
+  function getColIndex(table, label){
+    const ths = table.querySelectorAll('thead th');
+    const want = (label||'').toLowerCase().trim();
+    for (let i=0;i<ths.length;i++){
+      if ((ths[i].textContent||'').toLowerCase().trim() === want) return i;
+    }
+    return -1;
+  }
+
+  // Ensure headers for AR, MK, WK, PC, VE in recruiter Latest Results table (after AFQT%)
+  function ensureRecruiterSubtestHeaders(){
+    const card = document.querySelector('#recruiter .card + .card');
+    if (!card) return;
+    const table = card.querySelector('table');
+    if (!table) return;
+    const headRow = table.querySelector('thead tr');
+    if (!headRow) return;
+
+    const ths = headRow.querySelectorAll('th');
+    const afqtIdx = Array.from(ths).findIndex(th => (th.textContent||'').trim().toLowerCase() === 'afqt%');
+    const labels = ['AR%','MK%','WK%','PC%','VE'];
+    labels.forEach((lab, i) => {
+      const present = Array.from(ths).some(th => (th.textContent||'').trim().toLowerCase() === lab.toLowerCase());
+      if (!present){
+        const th = document.createElement('th'); th.textContent = lab;
+        // Insert after AFQT% and already inserted new ones
+        headRow.insertBefore(th, headRow.children[(afqtIdx + 1 + i)] || null);
+      }
+    });
+  }
+
+  // Ensure the row has empty TDs at the right positions; return indices
+  function ensureCells(row, table){
+    const need = ['AR%','MK%','WK%','PC%','VE'];
+    const idxs = {};
+    need.forEach(label => {
+      const idx = getColIndex(table, label);
+      if (idx === -1) return;
+      if (row.children.length <= idx){
+        const td = document.createElement('td');
+        td.textContent = '';
+        row.appendChild(td);
+      }
+      idxs[label] = idx;
+    });
+    return idxs;
+  }
+
+  // Find latest result by applicant "Code" value in the table row
+  function findResult(code){
+    try {
+      const rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]');
+      return rows.find(r => (r && (r.code||'').toString().trim() === code));
+    } catch(e){ return null; }
+  }
+
+  function processRow(row, table){
+    const codeIdx = getColIndex(table, 'Code');
+    if (codeIdx === -1) return;
+    const code = (row.children[codeIdx]?.textContent || '').trim();
+    if (!code) return;
+
+    const idxs = ensureCells(row, table);
+    const r = findResult(code);
+    if (!r || !r.sub) return;
+
+    const sub = r.sub || {};
+    const AR = toInt(sub.AR);
+    const MK = toInt(sub.MK);
+    const WK = toInt(sub.WK);
+    const PC = toInt(sub.PC);
+    const VE = (isFinite(WK) ? WK : 0) + (isFinite(PC) ? PC : 0);
+
+    function setOnce(label, val){
+      const i = idxs[label];
+      if (i == null) return;
+      const cell = row.children[i];
+      if (!cell.textContent.trim()){
+        cell.textContent = (label === 'VE') ? ( (WK || PC) ? VE : '—' ) : ( (isFinite(val) && val >= 0) ? (val + '%') : '—' );
+      }
+    }
+
+    setOnce('AR%', AR);
+    setOnce('MK%', MK);
+    setOnce('WK%', WK);
+    setOnce('PC%', PC);
+    setOnce('VE', VE);
+  }
+
+  function setupObserver(){
+    const card = document.querySelector('#recruiter .card + .card');
+    if (!card) return;
+    const table = card.querySelector('table');
+    const tbody = card.querySelector('#results-tbody');
+    if (!table || !tbody) return;
+
+    ensureRecruiterSubtestHeaders();
+    // Process existing rows (if any)
+    Array.from(tbody.querySelectorAll('tr')).forEach(tr => processRow(tr, table));
+
+    const obs = new MutationObserver(muts => {
+      ensureRecruiterSubtestHeaders();
+      muts.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType === 1 && node.tagName === 'TR'){
+            processRow(node, table);
+          }
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  window.addEventListener('DOMContentLoaded', setupObserver);
+  window.addEventListener('hashchange', setupObserver);
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+  // Make the recruiter "Recorded Codes" and "Latest Results" tables collapsible.
+  // We DO NOT modify existing markup in-place; we wrap the tables dynamically
+  // so core IDs and logic keep working unchanged.
+
+  function createWrap(table, label, storageKey){
+    if (!table || table._wrapped) return;
+    table._wrapped = true;
+
+    // Build wrapper structure
+    const wrap = document.createElement('div');
+    wrap.className = 'collapsible-wrap';
+
+    const head = document.createElement('div');
+    head.className = 'collapsible-head';
+    const left = document.createElement('div');
+    left.textContent = label;
+    const right = document.createElement('div');
+    right.innerHTML = '<span class="chev">▼</span>';
+    head.appendChild(left); head.appendChild(right);
+
+    const body = document.createElement('div');
+    body.className = 'collapsible-body';
+    // Move the table inside body
+    const parent = table.parentNode;
+    parent.insertBefore(wrap, table);
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    body.appendChild(table);
+
+    // Restore state
+    const stored = localStorage.getItem(storageKey);
+    const collapsed = stored ? (stored === '1') : true;
+    if (collapsed){
+      head.classList.add('is-collapsed');
+      body.classList.add('is-collapsed');
+    }
+
+    // Toggle behavior
+    head.addEventListener('click', function(){
+      const isCollapsed = body.classList.toggle('is-collapsed');
+      head.classList.toggle('is-collapsed', isCollapsed);
+      localStorage.setItem(storageKey, isCollapsed ? '1' : '0');
+    });
+  }
+
+  function init(){
+    // Codes table: first table under #recruiter (within first card)
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+
+    // Find the first card's table (recorded codes)
+    const firstCard = recruiter.querySelector('.card');
+    if (firstCard){
+      const codesTable = firstCard.querySelector('table');
+      if (codesTable){
+        createWrap(codesTable, 'Recorded Applicant Codes', 'asvab_collapse_codes');
+      }
+    }
+
+    // Latest Results table: second card's table
+    const secondCard = recruiter.querySelector('.card + .card');
+    if (secondCard){
+      const resultsTable = secondCard.querySelector('table');
+      if (resultsTable){
+        createWrap(resultsTable, 'Latest Results', 'asvab_collapse_results');
+      }
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('hashchange', init);
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+
+  // Generic helpers
+  function lc(s){ return (s||'').toString().trim().toLowerCase(); }
+  function getColIndex(table, label){
+    const want = lc(label);
+    const ths = table.querySelectorAll('thead th');
+    for (let i=0;i<ths.length;i++){
+      if (lc(ths[i].textContent) === want) return i;
+    }
+    return -1;
+  }
+  function pickText(cell){ return (cell && cell.textContent) ? cell.textContent.trim() : ''; }
+  function parseDateMaybe(s){
+    // Try to parse a reasonable date/time; return ms or NaN
+    const t = Date.parse(s);
+    return isNaN(t) ? NaN : t;
+  }
+
+  // Pull a timestamp from localStorage results by code (if available)
+  function tsFromResultsByCode(code){
+    try{
+      const rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]');
+      const r = rows.find(rr => (rr && (rr.code||'').toString().trim() === code));
+      if (!r) return NaN;
+      // Prefer explicit timestamp fields if present
+      if (r.ts) return +r.ts;
+      if (r.time) return +r.time;
+      if (r.date) { const tt = Date.parse(r.date); if (!isNaN(tt)) return tt; }
+    }catch(e){}
+    return NaN;
+  }
+
+  // Sorting core
+  function sortTable(tbody, comparator){
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    if (rows.length < 2) return;
+    rows.sort(comparator);
+    const frag = document.createDocumentFragment();
+    rows.forEach(r => frag.appendChild(r));
+    tbody.appendChild(frag);
+  }
+
+  function buildSortUI(headEl, storageKey, onChange){
+    if (!headEl.querySelector('.right-tools')){
+      const right = document.createElement('div');
+      right.className = 'right-tools';
+      headEl.appendChild(right);
+    }
+    const right = headEl.querySelector('.right-tools');
+    const wrap = document.createElement('div');
+    wrap.className = 'sort-wrap';
+    const label = document.createElement('label');
+    label.textContent = 'Sort by:';
+    label.setAttribute('for', storageKey+'_sort');
+    const sel = document.createElement('select');
+    sel.id = storageKey+'_sort';
+    sel.innerHTML = '<option value="date">Date</option><option value="name">Name</option><option value="rsid">RSID</option>';
+    right.appendChild(wrap);
+    wrap.appendChild(label);
+    wrap.appendChild(sel);
+
+    // Set default: Date (desc). Persist selection.
+    const saved = localStorage.getItem(storageKey+'_sort');
+    sel.value = saved || 'date';
+    sel.addEventListener('change', function(){
+      localStorage.setItem(storageKey+'_sort', sel.value);
+      onChange(sel.value);
+    });
+    // initial apply
+    onChange(sel.value);
+  }
+
+  // Apply sorting for Codes table
+  function initCodesSorting(){
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+    const firstCard = recruiter.querySelector('.card');
+    if (!firstCard) return;
+
+    const table = firstCard.querySelector('table');
+    const tbody = firstCard.querySelector('#codes-tbody');
+    const head = firstCard.querySelector('.collapsible-head');
+    if (!table || !tbody || !head) return;
+
+    const idx = {
+      name: getColIndex(table, 'Name'),
+      rsid: getColIndex(table, 'RSID'),
+      expires: getColIndex(table, 'Expires'),
+      code: getColIndex(table, 'Code')
+    };
+
+    function doSort(kind){
+      if (kind === 'name' && idx.name >= 0){
+        sortTable(tbody, (a,b)=> lc(a.children[idx.name]?.textContent).localeCompare(lc(b.children[idx.name]?.textContent)));
+      } else if (kind === 'rsid' && idx.rsid >= 0){
+        sortTable(tbody, (a,b)=> lc(a.children[idx.rsid]?.textContent).localeCompare(lc(b.children[idx.rsid]?.textContent)));
+      } else {
+        // Date: use Expires col if available; else fallback to creation order (no-op)
+        if (idx.expires >= 0){
+          sortTable(tbody, (a,b)=> {
+            const ta = parseDateMaybe(pickText(a.children[idx.expires]));
+            const tb = parseDateMaybe(pickText(b.children[idx.expires]));
+            // Most recent first
+            return (isNaN(tb)?0:tb) - (isNaN(ta)?0:ta);
+          });
+        }
+      }
+    }
+
+    buildSortUI(head, 'asvab_codes', doSort);
+  }
+
+  // Apply sorting for Results table
+  function initResultsSorting(){
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+    const secondCard = recruiter.querySelector('.card + .card');
+    if (!secondCard) return;
+
+    const table = secondCard.querySelector('table');
+    const tbody = secondCard.querySelector('#results-tbody');
+    const head = secondCard.querySelector('.collapsible-head');
+    if (!table || !tbody || !head) return;
+
+    const idx = {
+      name: getColIndex(table, 'Applicant'),
+      rsid: getColIndex(table, 'RSID'),
+      code: getColIndex(table, 'Code')
+    };
+
+    function doSort(kind){
+      if (kind === 'name' && idx.name >= 0){
+        sortTable(tbody, (a,b)=> lc(a.children[idx.name]?.textContent).localeCompare(lc(b.children[idx.name]?.textContent)));
+      } else if (kind === 'rsid' && idx.rsid >= 0){
+        sortTable(tbody, (a,b)=> lc(a.children[idx.rsid]?.textContent).localeCompare(lc(b.children[idx.rsid]?.textContent)));
+      } else {
+        // Date: no explicit date column; attempt by latest timestamp from localStorage by Code.
+        const codeIdx = idx.code;
+        if (codeIdx >= 0){
+          sortTable(tbody, (a,b)=> {
+            const codeA = pickText(a.children[codeIdx]);
+            const codeB = pickText(b.children[codeIdx]);
+            const ta = tsFromResultsByCode(codeA);
+            const tb = tsFromResultsByCode(codeB);
+            // Most recent first
+            return (isNaN(tb)?0:tb) - (isNaN(ta)?0:ta);
+          });
+        }
+      }
+    }
+
+    buildSortUI(head, 'asvab_results', doSort);
+  }
+
+  function init(){
+    initCodesSorting();
+    initResultsSorting();
+  }
+
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('hashchange', init);
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+
+  function ensureRecruiterMetricsCard(){
+    const rec = document.getElementById('recruiter');
+    if (!rec) return;
+    if (document.getElementById('recruiter-full-metrics')) return;
+
+    const card = document.createElement('div');
+    card.id = 'recruiter-full-metrics';
+    card.className = 'card hidden';
+    card.innerHTML = [
+      '<h3>Latest Full Test — AFQT, Subtests & Line Scores</h3>',
+      '<div id="rfm-grid">',
+        '<div class="kpi"><div class="lbl">AFQT</div><div class="val" id="rfm-afqt">—</div></div>',
+        '<div class="kpi"><div class="lbl">WK</div><div class="val" id="rfm-wk">—</div></div>',
+        '<div class="kpi"><div class="lbl">PC</div><div class="val" id="rfm-pc">—</div></div>',
+        '<div class="kpi"><div class="lbl">AR</div><div class="val" id="rfm-ar">—</div></div>',
+        '<div class="kpi"><div class="lbl">MK</div><div class="val" id="rfm-mk">—</div></div>',
+        '<div class="kpi"><div class="lbl">VE (WK+PC)</div><div class="val" id="rfm-ve">—</div></div>',
+      '</div>',
+      '<div id="rfm-lines"></div>'
+    ].join('');
+
+    // Insert after the first recruiter card (code generation)
+    const firstCard = rec.querySelector('.card');
+    if (firstCard && firstCard.nextSibling){
+      firstCard.parentNode.insertBefore(card, firstCard.nextSibling);
+    } else {
+      rec.appendChild(card);
+    }
+  }
+
+  function toInt(v){ return Math.max(0, Math.round(Number(v||0))); }
+
+  function computeLineScores(sub){
+    const WK = toInt(sub.WK), PC = toInt(sub.PC), AR = toInt(sub.AR), MK = toInt(sub.MK);
+    const GS = toInt(sub.GS), EI = toInt(sub.EI), AS = toInt(sub.AS), MC = toInt(sub.MC);
+    const VE = WK + PC;
+    return {
+      CL: VE + AR + MK,
+      CO: AR + AS + MC,
+      EL: GS + AR + MK + EI,
+      FA: AR + MK + MC,
+      GM: GS + AS + MK + EI,
+      GT: VE + AR,
+      MM: AS + MC + EI,
+      OF: VE + AS + MC,
+      SC: VE + AR + AS + MC,
+      ST: GS + VE + MK + MC
+    };
+  }
+
+  function formatPct(x){ return (isFinite(x) ? (Math.max(0, Math.round(x)) + '%') : '—'); }
+
+  function findLatestFull(){
+    try {
+      const rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]');
+      // rows[0] is most recent per your app; find first that is full
+      return rows.find(r => r && (r.mode === 'full' || (r.test||'').toLowerCase().includes('full')));
+    } catch(e){ return null; }
+  }
+
+  function renderRecruiterMetrics(){
+    ensureRecruiterMetricsCard();
+    const card = document.getElementById('recruiter-full-metrics');
+    if (!card) return;
+
+    const r = findLatestFull();
+    if (!r || !r.sub){
+      card.classList.add('hidden');
+      return;
+    }
+    const sub = r.sub;
+
+    // AFQT
+    const afqtEl = document.getElementById('rfm-afqt');
+    const afqtVal = (r.afqtPct != null ? r.afqtPct : (r.afqt != null ? r.afqt : null));
+    afqtEl.textContent = (afqtVal != null && isFinite(afqtVal)) ? (Math.round(afqtVal) + '%') : '—';
+
+    // Subtests
+    const wk = toInt(sub.WK), pc = toInt(sub.PC), ar = toInt(sub.AR), mk = toInt(sub.MK);
+    document.getElementById('rfm-wk').textContent = formatPct(wk);
+    document.getElementById('rfm-pc').textContent = formatPct(pc);
+    document.getElementById('rfm-ar').textContent = formatPct(ar);
+    document.getElementById('rfm-mk').textContent = formatPct(mk);
+    document.getElementById('rfm-ve').textContent = (isFinite(wk) || isFinite(pc)) ? ( (wk||0) + (pc||0) ) : '—';
+
+    // Line scores
+    const ls = computeLineScores(sub);
+    const wantOrder = ['CL','CO','EL','FA','GM','GT','MM','OF','SC','ST']; // 9 per request
+    const linesWrap = document.getElementById('rfm-lines');
+    linesWrap.innerHTML = '';
+    wantOrder.forEach(k => {
+      const div = document.createElement('div');
+      div.className = 'tag';
+      div.textContent = k + ' ' + (ls[k] != null ? ls[k] : '—');
+      linesWrap.appendChild(div);
+    });
+
+    card.classList.remove('hidden');
+  }
+
+  function init(){
+    renderRecruiterMetrics();
+    // Re-render when new rows appear in Latest Results table
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+    const secondCard = recruiter.querySelector('.card + .card');
+    if (!secondCard) return;
+    const tbody = secondCard.querySelector('#results-tbody');
+    if (!tbody) return;
+    const obs = new MutationObserver(()=>{ try { renderRecruiterMetrics(); } catch(e){} });
+    obs.observe(tbody, { childList: true });
+  }
+
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('hashchange', init);
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+
+  function ensureToast(){
+    if (document.getElementById('copy-toast')) return;
+    const t = document.createElement('div');
+    t.id = 'copy-toast';
+    t.className = 'copy-toast';
+    t.textContent = 'Code copied';
+    document.body.appendChild(t);
+  }
+  function showToast(msg){
+    ensureToast();
+    const t = document.getElementById('copy-toast');
+    t.textContent = msg || 'Copied';
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1200);
+  }
+
+  async function copyText(text){
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Code copied: ' + text);
+    } catch(e){
+      // Fallback: temporary textarea
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); showToast('Code copied: ' + text); } catch(_) {}
+      document.body.removeChild(ta);
+    }
+  }
+
+  // Add a small "Copy" button next to the Code cell in both recruiter tables
+  function enhanceCodesTable(){
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+
+    // Utility: find column index by header text
+    function getColIndex(table, label){
+      const want = (label||'').toLowerCase().trim();
+      const ths = table.querySelectorAll('thead th');
+      for (let i=0;i<ths.length;i++){
+        if ((ths[i].textContent||'').toLowerCase().trim() === want) return i;
+      }
+      return -1;
+    }
+
+    function applyToTable(cardSelector, storageKey){
+      const card = recruiter.querySelector(cardSelector);
+      if (!card) return;
+      const table = card.querySelector('table');
+      const tbody = card.querySelector('tbody');
+      if (!table || !tbody) return;
+
+      const codeIdx = getColIndex(table, 'Code');
+      if (codeIdx === -1) return;
+
+      function decorateRow(tr){
+        const cell = tr.children[codeIdx];
+        if (!cell || cell._copyDecorated) return;
+        const codeText = (cell.textContent||'').trim();
+        if (!codeText) return;
+        const wrap = document.createElement('span');
+        wrap.className = 'copy-code-wrap';
+        const codeSpan = document.createElement('span');
+        codeSpan.textContent = codeText;
+        const btn = document.createElement('button');
+        btn.className = 'copy-code-btn';
+        btn.type = 'button';
+        btn.textContent = 'Copy Code';
+        btn.addEventListener('click', function(e){
+          e.stopPropagation();
+          copyText(codeText);
+        });
+        // Clear and rebuild cell inline
+        cell.textContent = '';
+        cell.appendChild(wrap);
+        wrap.appendChild(codeSpan);
+        wrap.appendChild(btn);
+        cell._copyDecorated = true;
+      }
+
+      // Decorate existing rows
+      Array.from(tbody.querySelectorAll('tr')).forEach(decorateRow);
+
+      // Observe future rows
+      const obs = new MutationObserver(muts => {
+        muts.forEach(m => {
+          m.addedNodes.forEach(node => {
+            if (node.nodeType === 1 && node.tagName === 'TR'){
+              decorateRow(node);
+            }
+          });
+        });
+      });
+      obs.observe(tbody, { childList: true });
+    }
+
+    // First recruiter card (Recorded Applicant Codes)
+    applyToTable('.card', 'codes');
+    // Second recruiter card (Latest Results) — .card + .card
+    applyToTable('.card + .card', 'results');
+  }
+
+  function init(){
+    enhanceCodesTable();
+  }
+
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('hashchange', init);
+})();
+</script>
+<script>
+(function(){
+  'use strict';
+
+  // Utility: add a centered snackbar with Undo and Close
+  function ensureSnackbar(){
+    if (document.getElementById('center-snackbar-backdrop')) return;
+    const backdrop = document.createElement('div');
+    backdrop.id = 'center-snackbar-backdrop';
+    backdrop.className = 'center-snackbar-backdrop';
+    backdrop.innerHTML = [
+      '<div class="center-snackbar">',
+        '<div class="msg" id="csb-msg">Applicant deleted — Undo?</div>',
+        '<div class="actions">',
+          '<button class="btn btn-undo" id="csb-undo">Undo</button>',
+          '<button class="btn btn-close" id="csb-close">Close</button>',
+        '</div>',
+      '</div>'
+    ].join('');
+    document.body.appendChild(backdrop);
+  }
+  function snackbarShow(message, onUndo, onClose, ttlMs){
+    ensureSnackbar();
+    const backdrop = document.getElementById('center-snackbar-backdrop');
+    const msgEl = document.getElementById('csb-msg');
+    const undoBtn = document.getElementById('csb-undo');
+    const closeBtn = document.getElementById('csb-close');
+    let timer = null;
+    msgEl.textContent = message || 'Deleted — Undo?';
+    function hide(){
+      backdrop.classList.remove('show');
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (onClose) try { onClose(); } catch(e){}
+      // remove handlers to avoid duplicate bindings
+      undoBtn.onclick = null;
+      closeBtn.onclick = null;
+    }
+    undoBtn.onclick = function(){
+      if (onUndo) try { onUndo(); } catch(e){}
+      hide();
+    };
+    closeBtn.onclick = hide;
+    backdrop.classList.add('show');
+    const ms = Math.max(1000, (ttlMs==null?10000:ttlMs));
+    timer = setTimeout(hide, ms);
+  }
+
+  // Helpers
+  function getColIndex(table, label){
+    const want = (label||'').toLowerCase().trim();
+    const ths = table.querySelectorAll('thead th');
+    for (let i=0;i<ths.length;i++){
+      if ((ths[i].textContent||'').toLowerCase().trim() === want) return i;
+    }
+    return -1;
+  }
+  function purgeResultsByCode(code){
+    if (!code) return {removed: []};
+    let removed = [];
+    try {
+      const key = 'asvab.results.v8';
+      const rows = JSON.parse(localStorage.getItem(key) || '[]');
+      const keep = [];
+      rows.forEach(r => {
+        if (r && (r.code||'').toString().trim() === code) {
+          removed.push(r);
+        } else {
+          keep.push(r);
+        }
+      });
+      localStorage.setItem(key, JSON.stringify(keep));
+    } catch(e){}
+    return {removed};
+  }
+  function restoreResults(rows){
+    if (!rows || !rows.length) return;
+    try {
+      const key = 'asvab.results.v8';
+      const cur = JSON.parse(localStorage.getItem(key) || '[]');
+      // Put restored rows back at the top to be visible immediately
+      const next = [].concat(rows, cur);
+      localStorage.setItem(key, JSON.stringify(next));
+    } catch(e){}
+  }
+
+  function enhanceCodesTableWithDelete(){
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+    const firstCard = recruiter.querySelector('.card');
+    if (!firstCard) return;
+    const table = firstCard.querySelector('table');
+    const tbody = firstCard.querySelector('tbody');
+    if (!table || !tbody) return;
+
+    // Ensure Actions header
+    const ths = table.querySelectorAll('thead th');
+    const hasActions = Array.from(ths).some(th => (th.textContent||'').trim().toLowerCase() === 'actions');
+    if (!hasActions){
+      const headRow = table.querySelector('thead tr');
+      const th = document.createElement('th'); th.textContent = 'Actions';
+      headRow && headRow.appendChild(th);
+    }
+
+    const nameIdx = getColIndex(table, 'Name');
+    const codeIdx = getColIndex(table, 'Code');
+
+    function decorateRow(tr){
+      if (tr._delDecorated) return;
+      const td = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.className = 'codes-actions-btn';
+      btn.type = 'button';
+      btn.textContent = '🗑️';
+      btn.title = 'Delete applicant and history';
+      btn.addEventListener('click', function(e){
+        e.stopPropagation();
+        const who = (tr.children[nameIdx]?.textContent || 'this applicant').trim();
+        const code = (tr.children[codeIdx]?.textContent || '').trim();
+        if (!code) return;
+        const ok = confirm('Delete ' + who + ' and all stored test history for code ' + code + '?');
+        if (!ok) return;
+
+        // Capture state to allow Undo
+        const rowParent = tr.parentNode;
+        const rowIndex = Array.prototype.indexOf.call(rowParent.children, tr);
+        const rowHTML = tr.outerHTML;
+        const {removed} = purgeResultsByCode(code);
+
+        // Remove the row
+        tr.remove();
+
+        // Snackbar with Undo (10s)
+        snackbarShow('Applicant deleted — Undo?', function onUndo(){
+          // Reinsert row at previous index
+          if (rowIndex >= 0 && rowParent){
+            const temp = document.createElement('tbody');
+            temp.innerHTML = rowHTML;
+            const restored = temp.firstElementChild;
+            if (restored){
+              if (rowParent.children.length > rowIndex){
+                rowParent.insertBefore(restored, rowParent.children[rowIndex]);
+              } else {
+                rowParent.appendChild(restored);
+              }
+              // Re-decorate the restored row (copy button, delete button)
+              try {
+                // Re-apply copy code decorator if present in this build
+                const codeCell = restored.children[codeIdx];
+                if (codeCell && !codeCell._copyDecorated){
+                  // If a span wrapper exists from previous decorator, leave it.
+                  // Otherwise reconstruct basic display (no extra logic necessary here).
+                }
+              } catch(e){}
+              decorateRow(restored);
+            }
+          }
+          // Restore results
+          restoreResults(removed);
+        }, null, 10000);
+      });
+      td.appendChild(btn);
+      tr.appendChild(td);
+      tr._delDecorated = true;
+    }
+
+    // Decorate existing rows
+    Array.from(tbody.querySelectorAll('tr')).forEach(decorateRow);
+
+    // Observe future rows
+    const obs = new MutationObserver(muts => {
+      muts.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType === 1 && node.tagName === 'TR'){
+            decorateRow(node);
+          }
+        });
+      });
+    });
+    obs.observe(tbody, { childList: true });
+  }
+
+  function init(){
+    enhanceCodesTableWithDelete();
+  }
+
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('hashchange', init);
+})();
+</script>
+
+
+
+<script>
+(function(){
+  'use strict';
+  // Idempotent binding to avoid duplicate listeners
+  function setCollapsibleHeight(bodyEl, collapsed){
+    if (!bodyEl) return;
+    if (collapsed){
+      bodyEl.style.maxHeight = '0px';
+      bodyEl.classList.add('is-collapsed');
+      return;
+    }
+    bodyEl.classList.remove('is-collapsed');
+    bodyEl.style.maxHeight = 'none';
+    const h = bodyEl.scrollHeight || 0;
+    bodyEl.style.maxHeight = (h ? (h + 'px') : '1200px');
+  }
+  function bindOne(wrap){
+    if (!wrap || wrap._collapsibleFixed) return;
+    const head = wrap.querySelector('.collapsible-head');
+    const body = wrap.querySelector('.collapsible-body');
+    if (!head || !body) return;
+    wrap._collapsibleFixed = true;
+
+    // Initial state based on class
+    const collapsed = body.classList.contains('is-collapsed');
+    setTimeout(function(){ setCollapsibleHeight(body, collapsed); }, 0);
+
+    head.addEventListener('click', function(e){
+      // Don't fire if interacting with right-side controls inside header (e.g., sort dropdown)
+      if (e.target && (e.target.tagName === 'SELECT' || e.target.closest('.right-tools'))) return;
+      const nowCollapsed = body.classList.contains('is-collapsed');
+      const nextExpanded = nowCollapsed; // if collapsed, we want to expand
+      setCollapsibleHeight(body, !nextExpanded);
+    });
+  }
+  function reflow(){
+    document.querySelectorAll('.collapsible-wrap').forEach(bindOne);
+    // Recompute open panels on resize
+    document.querySelectorAll('.collapsible-body').forEach(function(b){
+      if (!b.classList.contains('is-collapsed')){
+        b.style.maxHeight = 'none';
+        const h = b.scrollHeight || 0;
+        b.style.maxHeight = (h ? (h + 'px') : '1200px');
+      }
+    });
+  }
+  window.addEventListener('DOMContentLoaded', reflow);
+  window.addEventListener('hashchange', reflow);
+  window.addEventListener('resize', function(){
+    reflow();
+  });
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+  function setCollapsibleHeight(bodyEl, collapsed){
+    if (!bodyEl) return;
+    if (collapsed){
+      bodyEl.style.maxHeight = '0px';
+      bodyEl.classList.add('is-collapsed');
+    } else {
+      bodyEl.classList.remove('is-collapsed');
+      bodyEl.style.maxHeight = 'none';
+      const h = bodyEl.scrollHeight || 0;
+      bodyEl.style.maxHeight = (h ? (h + 'px') : '1200px');
+    }
+  }
+  function bindWrap(wrap){
+    if (!wrap || wrap._collapsibleBound) return;
+    const head = wrap.querySelector('.collapsible-head');
+    const body = wrap.querySelector('.collapsible-body');
+    if (!head || !body) return;
+    wrap._collapsibleBound = true;
+
+    // Initial layout
+    const collapsed = body.classList.contains('is-collapsed');
+    setTimeout(function(){ setCollapsibleHeight(body, collapsed); }, 0);
+
+    head.addEventListener('click', function(e){
+      // Only ignore if the user is interacting with a SELECT control directly
+      if (e.target && e.target.tagName === 'SELECT') return;
+      const isCollapsed = body.classList.contains('is-collapsed');
+      setCollapsibleHeight(body, !isCollapsed);
+    });
+  }
+  function bindAll(){
+    document.querySelectorAll('.collapsible-wrap').forEach(bindWrap);
+  }
+  function observeRecruiter(){
+    const host = document.getElementById('recruiter') || document.body;
+    const obs = new MutationObserver(function(muts){
+      muts.forEach(function(m){
+        if (m.addedNodes && m.addedNodes.length){
+          bindAll();
+        }
+      });
+    });
+    obs.observe(host, { childList: true, subtree: true });
+  }
+  function onResize(){
+    document.querySelectorAll('.collapsible-body').forEach(function(b){
+      if (!b.classList.contains('is-collapsed')){
+        b.style.maxHeight = 'none';
+        const h = b.scrollHeight || 0;
+        b.style.maxHeight = (h ? (h + 'px') : '1200px');
+      }
+    });
+  }
+  window.addEventListener('DOMContentLoaded', function(){
+    bindAll();
+    observeRecruiter();
+  });
+  window.addEventListener('hashchange', bindAll);
+  window.addEventListener('resize', onResize);
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+  function ensureRecruiterMetricsCard(){
+    const rec = document.getElementById('recruiter');
+    if (!rec) return;
+    if (document.getElementById('recruiter-full-metrics')) return;
+    const card = document.createElement('div');
+    card.id = 'recruiter-full-metrics';
+    card.className = 'card hidden';
+    card.innerHTML = [
+      '<h3>Latest Full Test — AFQT, Subtests & Line Scores</h3>',
+      '<div id="rfm-grid">',
+        '<div class="kpi"><div class="lbl">AFQT</div><div class="val" id="rfm-afqt">—</div></div>',
+        '<div class="kpi"><div class="lbl">WK</div><div class="val" id="rfm-wk">—</div></div>',
+        '<div class="kpi"><div class="lbl">PC</div><div class="val" id="rfm-pc">—</div></div>',
+        '<div class="kpi"><div class="lbl">AR</div><div class="val" id="rfm-ar">—</div></div>',
+        '<div class="kpi"><div class="lbl">MK</div><div class="val" id="rfm-mk">—</div></div>',
+        '<div class="kpi"><div class="lbl">VE (WK+PC)</div><div class="val" id="rfm-ve">—</div></div>',
+      '</div>',
+      '<div id="rfm-lines"></div>'
+    ].join('');
+    const firstCard = rec.querySelector('.card');
+    if (firstCard && firstCard.nextSibling){
+      firstCard.parentNode.insertBefore(card, firstCard.nextSibling);
+    } else {
+      rec.appendChild(card);
+    }
+  }
+  function toInt(v){ return Math.max(0, Math.round(Number(v||0))); }
+  function computeLineScores(sub){
+    const WK = toInt(sub.WK), PC = toInt(sub.PC), AR = toInt(sub.AR), MK = toInt(sub.MK);
+    const GS = toInt(sub.GS), EI = toInt(sub.EI), AS = toInt(sub.AS), MC = toInt(sub.MC);
+    const VE = WK + PC;
+    return {
+      CL: VE + AR + MK,
+      CO: AR + AS + MC,
+      EL: GS + AR + MK + EI,
+      FA: AR + MK + MC,
+      GM: GS + AS + MK + EI,
+      GT: VE + AR,
+      MM: AS + MC + EI,
+      OF: VE + AS + MC,
+      SC: VE + AR + AS + MC,
+      ST: GS + VE + MK + MC
+    };
+  }
+  function formatPct(x){ return (isFinite(x) ? (Math.max(0, Math.round(x)) + '%') : '—'); }
+  function findLatestFull(){
+    try {
+      const rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]');
+      return rows.find(r => r && (r.mode === 'full' || (r.test||'').toLowerCase().includes('full')));
+    } catch(e){ return null; }
+  }
+  function renderRecruiterMetrics(){
+    ensureRecruiterMetricsCard();
+    const card = document.getElementById('recruiter-full-metrics');
+    if (!card) return;
+    const r = findLatestFull();
+    if (!r || !r.sub){
+      card.classList.add('hidden');
+      return;
+    }
+    const sub = r.sub;
+    const afqtEl = document.getElementById('rfm-afqt');
+    const afqtVal = (r.afqtPct != null ? r.afqtPct : (r.afqt != null ? r.afqt : null));
+    afqtEl.textContent = (afqtVal != null && isFinite(afqtVal)) ? (Math.round(afqtVal) + '%') : '—';
+    const wk = toInt(sub.WK), pc = toInt(sub.PC), ar = toInt(sub.AR), mk = toInt(sub.MK);
+    document.getElementById('rfm-wk').textContent = formatPct(wk);
+    document.getElementById('rfm-pc').textContent = formatPct(pc);
+    document.getElementById('rfm-ar').textContent = formatPct(ar);
+    document.getElementById('rfm-mk').textContent = formatPct(mk);
+    document.getElementById('rfm-ve').textContent = (isFinite(wk) || isFinite(pc)) ? ((wk||0)+(pc||0)) : '—';
+    const ls = computeLineScores(sub);
+    const order = ['CL','CO','EL','FA','GM','GT','MM','OF','SC','ST'];
+    const wrap = document.getElementById('rfm-lines'); wrap.innerHTML='';
+    order.forEach(k=>{
+      const div=document.createElement('div');div.className='tag';
+      div.textContent = k + ' ' + (ls[k] != null ? ls[k] : '—');
+      wrap.appendChild(div);
+    });
+    card.classList.remove('hidden');
+  }
+  function init(){
+    renderRecruiterMetrics();
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+    const resultsCard = recruiter.querySelector('.card + .card');
+    const tbody = resultsCard && resultsCard.querySelector('#results-tbody');
+    if (tbody){
+      const obs = new MutationObserver(()=>{ try{ renderRecruiterMetrics(); }catch(e){} });
+      obs.observe(tbody, {childList:true});
+    }
+  }
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('hashchange', init);
+})();
+</script>
+
+<script>
+(function(){
+  'use strict';
+  function ensureApplicantSubtestsBox(){
+    const summary = document.getElementById('applicant-summary');
+    if (!summary) return;
+    if (!document.getElementById('applicant-subtests')){
+      const box = document.createElement('div');
+      box.id = 'applicant-subtests';
+      box.className = 'card hidden';
+      box.innerHTML = [
+        '<h3>Subtest Scores (AFQT subjects)</h3>',
+        '<div class="note">Shown for all test modes</div>',
+        '<div style="margin-top:8px">',
+        '<table style="width:100%;border-collapse:separate;border-spacing:0 6px">',
+        '<tbody>',
+        '<tr><td class="note">Arithmetic Reasoning (AR)</td><td id="sc-ar"><strong>—</strong></td></tr>',
+        '<tr><td class="note">Mathematics Knowledge (MK)</td><td id="sc-mk"><strong>—</strong></td></tr>',
+        '<tr><td class="note">Word Knowledge (WK)</td><td id="sc-wk"><strong>—</strong></td></tr>',
+        '<tr><td class="note">Paragraph Comprehension (PC)</td><td id="sc-pc"><strong>—</strong></td></tr>',
+        '<tr><td class="note">VE (WK + PC)</td><td id="sc-ve"><strong>—</strong></td></tr>',
+        '<tr><td class="note">ST (line score)</td><td id="sc-st"><strong>—</strong></td></tr>',
+        '</tbody>',
+        '</table>',
+        '</div>'
+      ].join('');
+      summary.parentNode.insertBefore(box, summary.nextSibling);
+    }
+  }
+  function toInt(v){ return Math.max(0, Math.round(Number(v||0))); }
+  function renderApplicantSubtestsFromLast(){
+    ensureApplicantSubtestsBox();
+    const box = document.getElementById('applicant-subtests');
+    const arEl = document.getElementById('sc-ar');
+    const mkEl = document.getElementById('sc-mk');
+    const wkEl = document.getElementById('sc-wk');
+    const pcEl = document.getElementById('sc-pc');
+    const veEl = document.getElementById('sc-ve');
+    const stEl = document.getElementById('sc-st');
+    if (!box || !arEl || !mkEl || !wkEl || !pcEl || !veEl) return;
+    let rows = [];
+    try { rows = JSON.parse(localStorage.getItem('asvab.results.v8') || '[]'); } catch(e){}
+    const r = rows && rows[0];
+    if (!r || !r.sub){
+      box.classList.add('hidden');
+      return;
+    }
+    const sub = r.sub || {};
+    const AR = toInt(sub.AR), MK = toInt(sub.MK), WK = toInt(sub.WK), PC = toInt(sub.PC);
+    const GS = toInt(sub.GS), MC = toInt(sub.MC);
+    const VE = (isFinite(WK)?WK:0) + (isFinite(PC)?PC:0);
+    function fmt(x){ return (isFinite(x) && x >= 0) ? (x + '%') : '—'; }
+    arEl.innerHTML = '<strong>' + fmt(AR) + '</strong>';
+    mkEl.innerHTML = '<strong>' + fmt(MK) + '</strong>';
+    wkEl.innerHTML = '<strong>' + fmt(WK) + '</strong>';
+    pcEl.innerHTML = '<strong>' + fmt(PC) + '</strong>';
+    veEl.innerHTML = '<strong>' + ( (WK || PC) ? VE : '—' ) + '</strong>';
+    if (stEl){
+      const isFull = (r.mode === 'full' || (r.test||'').toLowerCase().includes('full'));
+      const ST = (GS||0) + (VE||0) + (MK||0) + (MC||0);
+      stEl.innerHTML = '<strong>' + (isFull ? ST : '—') + '</strong>';
+    }
+    box.classList.remove('hidden');
+  }
+  function setupApplicantObserver(){
+    const app = document.getElementById('applicant');
+    const summary = document.getElementById('applicant-summary');
+    if (!app || !summary) return;
+    ensureApplicantSubtestsBox();
+    const obs = new MutationObserver(()=>{
+      if (!summary.classList.contains('hidden')){
+        try { renderApplicantSubtestsFromLast(); } catch(e){}
+      }
+    });
+    obs.observe(app, { attributes:true, childList:true, subtree:true });
+  }
+  window.addEventListener('DOMContentLoaded', function(){
+    try { renderApplicantSubtestsFromLast(); } catch(e){}
+    setupApplicantObserver();
+  });
+  window.addEventListener('hashchange', function(){ try { renderApplicantSubtestsFromLast(); } catch(e){} });
+})();
+</script>
+
+
+<script>
+(function(){
+  'use strict';
+  // Broad, safe purge: remove entries with matching code in any app-specific list.
+  function purgeEverywhereByCode(code){
+    if (!code) return {changed:0, keys:[]};
+    let changed = 0, keys = [];
+    try{
+      for (let i=0;i<localStorage.length;i++){
+        const k = localStorage.key(i);
+        // Only touch app keys
+        if (!/^asvab\./.test(k)) continue;
+        let raw = localStorage.getItem(k);
+        if (!raw) continue;
+        let val = null;
+        try { val = JSON.parse(raw); } catch(e){ continue; }
+        if (!Array.isArray(val)) continue;
+        // Keep items that don't match the code
+        const next = val.filter(item => !(item && typeof item === 'object' && (item.code||'').toString().trim() === code));
+        if (next.length !== val.length){
+          localStorage.setItem(k, JSON.stringify(next));
+          changed++; keys.push(k);
+        }
+      }
+    }catch(e){}
+    return {changed, keys};
+  }
+
+  // Hook into existing delete flow on the codes table without replacing it;
+  // wrap the snackbar call site to additionally call purgeEverywhereByCode.
+  function augmentCodesDelete(){
+    const recruiter = document.getElementById('recruiter');
+    if (!recruiter) return;
+    const firstCard = recruiter.querySelector('.card');
+    if (!firstCard) return;
+    const tbody = firstCard.querySelector('tbody');
+    if (!tbody) return;
+
+    // If our decorator already added buttons, we can intercept their handler
+    // by delegating click events and running the broader purge after the built-in one.
+    tbody.addEventListener('click', function(e){
+      const btn = e.target && e.target.closest && e.target.closest('.codes-actions-btn');
+      if (!btn) return;
+      // Find the row and extract code
+      const tr = btn.closest('tr');
+      if (!tr) return;
+      const table = firstCard.querySelector('table');
+      if (!table) return;
+      const ths = table.querySelectorAll('thead th');
+      let codeIdx = -1;
+      for (let i=0;i<ths.length;i++){
+        if ((ths[i].textContent||'').trim().toLowerCase() === 'code'){ codeIdx = i; break; }
+      }
+      if (codeIdx === -1) return;
+      const code = (tr.children[codeIdx]?.textContent || '').trim() || (tr.querySelector('.copy-code-wrap span')?.textContent||'').trim();
+      if (!code) return;
+      // Small delay: allow the existing handler to run first (remove row, purge results),
+      // then we do a broad purge of any remaining lists so it doesn't come back on reload.
+      setTimeout(function(){ purgeEverywhereByCode(code); }, 50);
+    }, {capture:true});
+  }
+
+  window.addEventListener('DOMContentLoaded', augmentCodesDelete);
+  window.addEventListener('hashchange', augmentCodesDelete);
+})();
+</script>
+
+<!-- END:EXT_LOGIC -->
+
+This template preserves existing behavior and adds:
+  • Smoke test for required elements (alerts + console errors if something is missing)
+  • Trimmed input & Enter‑key support on recruiter login
+  • Autocomplete=off + autofocus on passcode
+  • Event listeners bound in JS (so markup tweaks are less likely to break features)
+  • Clear extension zones for future edits
+-->
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ASVAB Practice — Superscripts + Strict Subjects</title>
+<style>:root{--bg:#0b1220;--ink:#e5e7eb;--muted:#9fb3d9;--card:#0f172a;--line:#233044;--blue:#60a5fa;--green:#22c55e;--amber:#f59e0b;--red:#ef4444}
+  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif}
+  body{margin:0;background:linear-gradient(180deg,#071021,#0b1220);color:var(--ink)}
+  .wrap{max-width:1180px;margin:20px auto;padding:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  h1{margin:.2em 0;font-size:1.35rem}
+  h2{margin:.2em 0;font-size:1.1rem;color:var(--muted)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .between{justify-content:space-between}
+  .note{font-size:.92rem;color:var(--muted)}
+  input,select{padding:10px;border:1px solid var(--line);background:#0b1220;color:var(--ink);border-radius:10px}
+  button{padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:#1a2336;color:var(--ink);cursor:pointer}
+  button.primary{background:var(--blue);color:#081127;border:0}
+  button.good{background:var(--green);color:#08160e;border:0}
+  .subject-badge{display:inline-block;padding:.15rem .5rem;border:1px solid var(--line);border-radius:999px;background:#0b1426;color:#b8c7e0;font-size:.8rem}
+  .choice{display:flex;gap:10px;align-items:flex-start;padding:8px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:#0b1528}
+  .progress{height:10px;background:#13203a;border-radius:999px;overflow:hidden}
+  .progress>span{display:block;height:100%;background:#60a5fa;width:0%}
+  .hidden{display:none}
+
+/* EXT: Persistent Exit button on applicant pages */
+#exit-to-home {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--blue, #3b82f6);
+  color: #081127;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+#exit-to-home:active { transform: translateY(1px); }
+
+
+/* ===== Readability & Spacing: Recruiter Code Generation ===== */
+#recruiter .row { gap: 14px; flex-wrap: wrap; }
+#recruiter #rsid-row { margin-bottom: 12px; }
+
+/* Inputs/selects: make breathing room and sensible min widths */
+#recruiter input, #recruiter select {
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+#recruiter #app-name { min-width: 240px; }
+#recruiter #motivator { min-width: 160px; }
+#recruiter #test-mode { min-width: 260px; }
+#recruiter #new-code-note { min-width: 280px; flex: 1; }
+
+/* Buttons slightly larger for tap targets */
+#recruiter button { padding: 10px 14px; border-radius: 12px; }
+
+/* Tables: improve density, contrast, and wrap long text */
+#recruiter table { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0 6px; }
+#recruiter thead th {
+  padding: 10px 8px;
+  font-weight: 600;
+  background: #0b1528;
+  border-bottom: 1px solid var(--line);
+}
+#recruiter tbody td {
+  padding: 10px 8px;
+  line-height: 1.25;
+  vertical-align: top;
+  background: #0b1426;
+  border: 1px solid #151f33;
+  border-left: 0; border-right: 0;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Zebra effect for readability */
+#recruiter tbody tr:nth-child(odd) td { background: #0d1630; }
+#recruiter tbody tr:hover td { background: #102040; }
+
+/* Tighten small text under headers */
+#recruiter .note { line-height: 1.2; }
+
+/* Add spacing between the two recruiter cards */
+#recruiter > .card + .card { margin-top: 16px; }
+
+/* On small screens, stack fields cleanly */
+@media (max-width: 800px) {
+  #recruiter .row { gap: 10px; }
+  #recruiter #app-name,
+  #recruiter #motivator,
+  #recruiter #test-mode,
+  #recruiter #new-code-note,
+  #recruiter #rsid { min-width: min(100%, 360px); }
+}
+
+/* ===== Recruiter Table Column Alignment Polishing ===== */
+#recruiter table th, #recruiter table td {
+  text-align: center;
+}
+#recruiter table td:first-child, #recruiter table th:first-child {
+  text-align: left;
+}
+#recruiter table td:nth-child(2), #recruiter table th:nth-child(2) {
+  text-align: left;
+}
+
+/* Consistent column width proportions */
+#recruiter table th:nth-child(1), #recruiter table td:nth-child(1) { width: 10%; }  /* Applicant / Code */
+#recruiter table th:nth-child(2), #recruiter table td:nth-child(2) { width: 10%; }
+#recruiter table th:nth-child(3), #recruiter table td:nth-child(3) { width: 10%; }  /* RSID */
+#recruiter table th:nth-child(4), #recruiter table td:nth-child(4) { width: 10%; }  /* Motivator */
+#recruiter table th:nth-child(5), #recruiter table td:nth-child(5) { width: 12%; }  /* Test */
+#recruiter table th:nth-child(6), #recruiter table td:nth-child(6) { width: 18%; }  /* Notes */
+#recruiter table th:nth-child(7), #recruiter table td:nth-child(7) { width: 8%; }   /* AFQT% */
+#recruiter table th:nth-child(8), #recruiter table td:nth-child(8),
+#recruiter table th:nth-child(9), #recruiter table td:nth-child(9),
+#recruiter table th:nth-child(10), #recruiter table td:nth-child(10),
+#recruiter table th:nth-child(11), #recruiter table td:nth-child(11),
+#recruiter table th:nth-child(12), #recruiter table td:nth-child(12) {
+  width: 7%;
+}
+#recruiter table th:nth-child(13), #recruiter table td:nth-child(13) { width: 10%; } /* Line Scores */
+
+/* Align numeric scores neatly */
+#recruiter table td:nth-child(7),
+#recruiter table td:nth-child(8),
+#recruiter table td:nth-child(9),
+#recruiter table td:nth-child(10),
+#recruiter table td:nth-child(11),
+#recruiter table td:nth-child(12),
+#recruiter table td:nth-child(13) {
+  text-align: right;
+  padding-right: 10px;
+}
+
+/* Reduce cramped look on small screens */
+@media (max-width: 900px) {
+  #recruiter table th, #recruiter table td {
+    font-size: 0.85rem;
+    padding: 6px 4px;
+  }
+}
+
+/* ===== Collapsible Tables (Recruiter) ===== */
+.collapsible-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0b1426; }
+.collapsible-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; cursor: pointer; user-select: none;
+  background: #0b1528; border-bottom: 1px solid #16243c; font-weight: 600;
+}
+.collapsible-head .chev { transition: transform .2s ease; margin-left: 8px; }
+.collapsible-head.is-collapsed .chev { transform: rotate(-90deg); }
+.collapsible-body {
+  overflow: hidden; transition: max-height .25s ease;
+  max-height: 0; /* collapsed by default */
+}
+.collapsible-body.is-collapsed { max-height: 0; }
+
+/* ===== Recruiter Table Sorting Controls ===== */
+.collapsible-head .right-tools { display: flex; align-items: center; gap: 8px; }
+.sort-wrap { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.sort-wrap label { font-size: .9rem; color: var(--muted); }
+.sort-wrap select {
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: #0b1220; color: var(--ink);
+}
+@media (max-width: 720px){
+  .sort-wrap label { display: none; }
+}
+
+/* ===== Recruiter: Full Test Metrics Summary ===== */
+#recruiter-full-metrics.card { margin-top: 16px; }
+#rfm-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0,1fr));
+  gap: 10px;
+}
+#rfm-grid .kpi {
+  background: #0b1426;
+  border: 1px solid #1a2740;
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+}
+#rfm-grid .kpi .lbl { font-size: .8rem; color: var(--muted); }
+#rfm-grid .kpi .val { font-size: 1.05rem; font-weight: 700; margin-top: 4px; }
+#rfm-lines { display: grid; grid-template-columns: repeat(5, minmax(0,1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+#rfm-lines .tag {
+  background: #0b1528;
+  border: 1px solid #16243c;
+  border-radius: 999px;
+  padding: 6px 10px;
+  text-align: center;
+  font-weight: 600;
+}
+@media (max-width: 900px){
+  #rfm-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  #rfm-lines { grid-template-columns: repeat(3, minmax(0,1fr)); }
+}
+
+/* ===== Copy-to-Clipboard for Applicant Passcodes ===== */
+.copy-code-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.copy-code-btn {
+  padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: #102040; color: var(--ink); cursor: pointer; font-size: .8rem;
+}
+.copy-code-btn:active { transform: translateY(1px); }
+.copy-toast {
+  position: fixed; right: 16px; bottom: 16px;
+  background: #0b1528; color: var(--ink);
+  border: 1px solid #1a2740; border-radius: 10px;
+  padding: 8px 12px; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  opacity: 0; pointer-events: none; transition: opacity .2s ease;
+}
+.copy-toast.show { opacity: 1; }
+
+/* ===== Centered Snackbar for Delete/Undo ===== */
+.center-snackbar-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.35);
+  display: none;
+  align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.center-snackbar-backdrop.show { display: flex; }
+.center-snackbar {
+  background: #0b1528;
+  color: var(--ink);
+  border: 1px solid #1a2740;
+  border-radius: 16px;
+  padding: 16px 18px;
+  min-width: 320px;
+  max-width: 88vw;
+  box-shadow: 0 12px 32px rgba(0,0,0,.4);
+  text-align: center;
+}
+.center-snackbar .msg { font-weight: 600; margin-bottom: 10px; }
+.center-snackbar .actions { display: flex; gap: 10px; justify-content: center; }
+.center-snackbar .btn {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.center-snackbar .btn-undo { background: #0b1220; color: var(--ink); border-color: var(--line); }
+.center-snackbar .btn-close { background: #0b1220; color: var(--ink); border-color: var(--line); }
+@media (max-width: 540px){
+  .center-snackbar { min-width: 260px; padding: 14px; }
+}
+/* Delete buttons (codes table) — transparent emoji */
+.codes-actions-btn {
+  background: transparent;
+  border: none;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: 1rem; /* readable emoji size */
+  line-height: 1;
+  color: inherit; /* use app text color */
+}
+.codes-actions-btn:hover { opacity: 0.9; }
+.codes-actions-btn:active { transform: translateY(1px); }
+
+/* ===== Collapsible fix (append-only): JS will set explicit max-height on expand ===== */
+.collapsible-body { 
+  overflow: hidden; 
+  transition: max-height .25s ease; 
+}
+
+/* ===== Recruiter: Full Test Metrics Summary ===== */
+#recruiter-full-metrics.card { margin-top: 16px; }
+#rfm-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0,1fr));
+  gap: 10px;
+}
+#rfm-grid .kpi {
+  background: #0b1426;
+  border: 1px solid #1a2740;
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+}
+#rfm-grid .kpi .lbl { font-size: .8rem; color: var(--muted); }
+#rfm-grid .kpi .val { font-size: 1.05rem; font-weight: 700; margin-top: 4px; }
+#rfm-lines {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0,1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+#rfm-lines .tag {
+  background: #0b1528;
+  border: 1px solid #16243c;
+  border-radius: 999px;
+  padding: 6px 10px;
+  text-align: center;
+  font-weight: 600;
+}
+@media (max-width: 900px){
+  #rfm-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  #rfm-lines { grid-template-columns: repeat(3, minmax(0,1fr)); }
+}
+
+/* ===== Spacing tune: Recorded Applicant Codes columns ===== */
+#recruiter .card:first-of-type table { table-layout: fixed; width: 100%; }
+#recruiter .card:first-of-type thead th,
+#recruiter .card:first-of-type tbody td { padding: 10px 10px; }
+#recruiter .card:first-of-type thead th:nth-child(1),
+#recruiter .card:first-of-type tbody td:nth-child(1) { width: 10%; } /* Code */
+#recruiter .card:first-of-type thead th:nth-child(2),
+#recruiter .card:first-of-type tbody td:nth-child(2) { width: 10%; } /* RSID */
+#recruiter .card:first-of-type thead th:nth-child(3),
+#recruiter .card:first-of-type tbody td:nth-child(3) { width: 18%; } /* Name */
+#recruiter .card:first-of-type thead th:nth-child(4),
+#recruiter .card:first-of-type tbody td:nth-child(4) { width: 12%; } /* Motivator */
+#recruiter .card:first-of-type thead th:nth-child(5),
+#recruiter .card:first-of-type tbody td:nth-child(5) { width: 12%; } /* Test */
+#recruiter .card:first-of-type thead th:nth-child(6),
+#recruiter .card:first-of-type tbody td:nth-child(6) { width: 20%; } /* Note */
+#recruiter .card:first-of-type thead th:nth-child(7),
+#recruiter .card:first-of-type tbody td:nth-child(7) { width: 8%;  text-align:center; } /* Status */
+#recruiter .card:first-of-type thead th:nth-child(8),
+#recruiter .card:first-of-type tbody td:nth-child(8) { width: 8%; }  /* Expires */
+#recruiter .card:first-of-type thead th:nth-child(9),
+#recruiter .card:first-of-type tbody td:nth-child(9) { width: 2%;  text-align:center; } /* Actions */
+
+/* Keep code cell tidy with the button */
+#recruiter .card:first-of-type td:nth-child(1) .copy-code-wrap {
+  display: inline-flex; gap: 6px; align-items: center; white-space: nowrap;
+}
+#recruiter .card:first-of-type td:nth-child(1) .copy-code-btn {
+  padding: 4px 8px; font-size: .78rem;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section id="home" class="card">
+    <h1>ASVAB Practice App</h1>
+    <p class="note">Recruiters sign in with passcode. Applicants use a one‑time code generated by a recruiter for a specific test.</p>
+    <div id="login-card" class="card">
+      <h2>Recruiter Sign In</h2>
+      <div class="row">
+        <input id="recruiterPass" type="password" placeholder="Recruiter passcode" onkeydown="if(event.key==='Enter') recruiterLogin()" / autocomplete="off">
+        <button id="loginBtn" class="primary" type="button" onclick="recruiterLogin()">Sign In</button>
+      </div>
+      <div id="recruiterLoginMsg" style="min-height:22px;margin-top:6px;color:#fca5a5"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Applicant Start</h2>
+      <div class="row">
+        <input id="appCode" placeholder="Enter applicant code" onkeydown="if(event.key==='Enter') startApplicant()"/>
+        <button class="good" type="button" onclick="startApplicant()">Start</button>
+      </div>
+      <div id="appMsg" style="min-height:22px;margin-top:6px;color:#fca5a5"></div>
+    </div>
+  </section>
+
+  <section id="recruiter" class="card hidden">
+    <div class="row between">
+      <div>
+        <h2>Recruiter Console</h2>
+        <p class="note">Generate one‑time applicant codes. Bank loaded: <strong id="bank-count">225</strong></p>
+      </div>
+      <button class="good" onclick="logoutRecruiter()">Logout</button>
+    </div>
+
+    <div class="card">
+      
+    <div class="row" id="rsid-row" style="margin-bottom:8px">
+      <input id="rsid" type="text" placeholder="Recruiter ID (RSID)" autocomplete="off" />
+      <span id="rsidMsg" class="note" style="color:#fca5a5"></span>
+    </div>
+    
+      <div class="row">
+        <input id="app-name" type="text" placeholder="Applicant full name (recommended)" />
+        <select id="motivator">
+          <option value="Training">Training</option>
+          <option value="Education">Education</option>
+          <option value="Adventure">Adventure</option>
+          <option value="Money">Money</option>
+          <option value="Service">Service</option>
+          <option value="Unknown" selected>Unknown</option>
+        </select>
+        <select id="test-mode">
+          <option value="short">Short AFQT (40) — AR, MK, WK, PC</option>
+          <option value="core">Core AFQT (105) — AR, MK, WK, PC</option>
+          <option value="full">Full Practical (225) — All subtests</option>
+        </select>
+        <input id="new-code-note" type="text" placeholder="Optional note (class date, location, etc.)" />
+        <button id="gen-code" class="good">Generate</button>
+      </div>
+      <table style="margin-top:10px;width:100%">
+        <thead><tr><th>Code</th><th>RSID</th><th>Name</th><th>Motivator</th><th>Test</th><th>Note</th><th>Status</th><th>Expires</th></tr></thead>
+        <tbody id="codes-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Latest Results</h3>
+      <table>
+        <thead><tr><th>Applicant</th><th>Code</th><th>RSID</th><th>Motivator</th><th>Test</th><th>Notes</th><th>AFQT%</th></tr></thead>
+        <tbody id="results-tbody"></tbody>
+      </table>
+      <div style="margin-top:6px;text-align:right"><button id="export-json">Export JSON</button></div>
+    </div>
+  </section>
+
+  <section id="applicant" class="card hidden">
+    <div class="row between">
+      <h2>Applicant Test</h2>
+      <div class="note" id="applicant-mode-line">Authorized test: —</div>
+    </div>
+    <div id="runner" class="card hidden">
+      <div class="row between">
+        <div><span id="subject-badge" class="subject-badge">—</span></div>
+        <div class="note">Question <span id="qnum">0</span>/<span id="qtotal">0</span></div>
+      </div>
+      <div class="progress" style="margin:10px 0 14px"><span id="progress-bar"></span></div>
+      <div id="qtext" style="margin:8px 0 12px"></div>
+      <div id="choices"></div>
+      <div class="row between" style="margin-top:12px">
+        <button id="prevBtn">Back</button>
+        <div>
+          <button id="saveNextBtn" class="primary">Save & Next</button>
+          <button id="submitBtn" class="good hidden">Submit Test</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="post-submit" class="card hidden">
+      <h3>Submitting your test…</h3>
+      <p class="note">Computing practice AFQT and line scores…</p>
+    </div>
+
+    <div id="applicant-summary" class="card hidden">
+      <h3>AFQT (approx.)</h3>
+      <div class="progress"><span id="afqt-bar"></span></div>
+      <div class="row between"><div class="note">Percentile</div><div id="afqt-val"><strong>—</strong></div></div>
+    </div>
+  </section>
+</div>
+
+<script id="asvab-bank" type="application/json">[{"id": "AR_001", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "If a car travels 180 miles in 3 hours, what is its average speed?", "options": ["30 mph", "45 mph", "55 mph", "60 mph"], "correct_answer": "60 mph", "explanation": "Speed = Distance ÷ Time = 180 ÷ 3 = 60 mph."}, {"id": "AR_002", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "A jacket costs $60 and is on sale for 25% off. What is the sale price?", "options": ["$15", "$30", "$45", "$50"], "correct_answer": "$45", "explanation": "25% of 60 = 15; 60 - 15 = $45."}, {"id": "AR_003", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A train travels at 50 mph for 2.5 hours and then 40 mph for 1.5 hours. What is the total distance?", "options": ["135 miles", "185 miles", "190 miles", "200 miles"], "correct_answer": "185 miles", "explanation": "50×2.5=125; 40×1.5=60; Total=185 miles."}, {"id": "AR_004", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "If 8 workers can complete a job in 12 days, how long will it take 6 workers to do the same job?", "options": ["9 days", "14 days", "16 days", "20 days"], "correct_answer": "16 days", "explanation": "Work ∝ 1/Workers. (8×12)/6 = 16 days."}, {"id": "AR_005", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A store sells 3 apples for $1.20. How much will 15 apples cost?", "options": ["$4.00", "$5.00", "$6.00", "$7.20"], "correct_answer": "$6.00", "explanation": "1 apple = 0.40; 15×0.40 = $6.00."}, {"id": "AR_006", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "A contractor mixes 12 gallons of paint by combining blue and white in a 2:1 ratio. How many gallons of blue paint are used?", "options": ["3", "4", "6", "8"], "correct_answer": "8", "explanation": "2 parts blue + 1 part white = 3 parts total; 2/3 of 12 = 8."}, {"id": "AR_007", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "If the price of a TV is reduced by 20% and then increased by 25%, what is the net percentage change?", "options": ["No change", "5% increase", "5% decrease", "10% increase"], "correct_answer": "No change", "explanation": "100→80→100; final price returns to original value."}, {"id": "AR_008", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "An airplane travels 600 miles in 2 hours with a tailwind, but only 400 miles in 2 hours against the wind. What is the plane’s still-air speed?", "options": ["90 mph", "100 mph", "120 mph", "130 mph"], "correct_answer": "100 mph", "explanation": "Let s=still air speed, w=wind. s+w=300; s−w=200 → s=250/2=100 mph."}, {"id": "AR_009", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "What is 15% of 80?", "options": ["10", "12", "14", "16"], "correct_answer": "12", "explanation": "0.15 × 80 = 12."}, {"id": "AR_010", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "If John can paint a house in 12 hours and Mark can paint it in 8 hours, how long will it take them to paint it together?", "options": ["4.8 hours", "5 hours", "6 hours", "7 hours"], "correct_answer": "4.8 hours", "explanation": "1/12 + 1/8 = 5/24; total time = 24/5 = 4.8 hours."}, {"id": "MK_001", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Simplify: 3x + 5x = ?", "options": ["8", "8x", "15x", "x8"], "correct_answer": "8x", "explanation": "Combine like terms: 3x + 5x = 8x."}, {"id": "MK_002", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Evaluate: 9² – 4² = ?", "options": ["13", "17", "65", "77"], "correct_answer": "65", "explanation": "81 − 16 = 65."}, {"id": "MK_003", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "If 2x + 3 = 11, what is x?", "options": ["3", "4", "5", "6"], "correct_answer": "4", "explanation": "2x = 8 → x = 4."}, {"id": "MK_004", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Simplify: (3x²)(2x³) = ?", "options": ["5x⁵", "6x⁵", "6x⁶", "5x⁶"], "correct_answer": "6x⁵", "explanation": "Multiply coefficients (3×2=6) and add exponents (2+3=5)."}, {"id": "MK_005", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Find the area of a rectangle 6 m long and 3 m wide.", "options": ["9 m²", "15 m²", "18 m²", "21 m²"], "correct_answer": "18 m²", "explanation": "A = L × W = 6×3 = 18 m²."}, {"id": "MK_006", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Solve: x/5 = 9", "options": ["40", "45", "50", "55"], "correct_answer": "45", "explanation": "Multiply both sides by 5: x = 45."}, {"id": "MK_007", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "Simplify: √(49/9) = ?", "options": ["7/3", "3/7", "14/9", "7"], "correct_answer": "7/3", "explanation": "√49 = 7, √9 = 3 → 7/3."}, {"id": "MK_008", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "If y = 3x + 2 and x = 4, what is y?", "options": ["10", "12", "14", "15"], "correct_answer": "14", "explanation": "y = 3(4)+2 = 12+2=14."}, {"id": "MK_009", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "Solve for x: 5x - 7 = 18", "options": ["3", "4", "5", "6"], "correct_answer": "5", "explanation": "5x=25 → x=5."}, {"id": "MK_010", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "The area of a circle is 154 cm². Find the radius. (Use π≈3.14)", "options": ["5 cm", "6 cm", "7 cm", "8 cm"], "correct_answer": "7 cm", "explanation": "A=πr²→154=3.14r²→r²≈49→r=7."}, {"id": "WK_001", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'rapid'.", "options": ["slow", "swift", "uncertain", "steady"], "correct_answer": "swift", "explanation": "'Rapid' and 'swift' are synonyms meaning fast."}, {"id": "WK_002", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'ancient'.", "options": ["modern", "old", "young", "recent"], "correct_answer": "old", "explanation": "'Ancient' means very old or from long ago."}, {"id": "WK_003", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'precise'.", "options": ["exact", "average", "quick", "rough"], "correct_answer": "exact", "explanation": "'Precise' means accurate or exact."}, {"id": "WK_004", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the opposite of 'scarce'.", "options": ["rare", "abundant", "limited", "valuable"], "correct_answer": "abundant", "explanation": "The opposite of 'scarce' is 'abundant' meaning plentiful."}, {"id": "WK_005", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'convey'.", "options": ["transport", "hide", "communicate", "replace"], "correct_answer": "communicate", "explanation": "'Convey' means to communicate or express information."}, {"id": "WK_006", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'meticulous'.", "options": ["careless", "thorough", "relaxed", "ordinary"], "correct_answer": "thorough", "explanation": "'Meticulous' means showing great attention to detail; 'thorough' fits best."}, {"id": "WK_007", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the opposite of 'vague'.", "options": ["unclear", "definite", "confused", "general"], "correct_answer": "definite", "explanation": "'Vague' means not clear; its opposite is 'definite'."}, {"id": "WK_008", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'deter'.", "options": ["encourage", "discourage", "ignore", "allow"], "correct_answer": "discourage", "explanation": "'Deter' means to discourage or prevent someone from taking action."}, {"id": "WK_009", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'assist'.", "options": ["help", "hinder", "ignore", "delay"], "correct_answer": "help", "explanation": "'Assist' and 'help' are synonyms."}, {"id": "WK_010", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'scrutinize'.", "options": ["examine", "reject", "simplify", "hide"], "correct_answer": "examine", "explanation": "'Scrutinize' means to examine closely."}, {"id": "PC_001", "subject": "Paragraph Comprehension", "difficulty": "easy", "question": "Passage: The sun provides the Earth with heat and light. Without it, life as we know it would not exist. \n\nQuestion: What is the main idea of the passage?", "options": ["The sun is dangerous", "The sun is essential for life", "The sun moves around Earth", "The sun changes colors"], "correct_answer": "The sun is essential for life", "explanation": "The passage emphasizes that life depends on the sun’s energy."}, {"id": "PC_002", "subject": "Paragraph Comprehension", "difficulty": "easy", "question": "Passage: Plants convert sunlight into energy through photosynthesis. This process sustains most life on Earth. \n\nQuestion: What process allows plants to make energy?", "options": ["Respiration", "Photosynthesis", "Fermentation", "Evaporation"], "correct_answer": "Photosynthesis", "explanation": "The passage explicitly states that photosynthesis is how plants produce energy."}, {"id": "PC_003", "subject": "Paragraph Comprehension", "difficulty": "moderate", "question": "Passage: Maria trained for months to run the marathon. Even when tired, she stayed focused on her goal. \n\nQuestion: What does this passage suggest about Maria?", "options": ["She is lazy", "She is determined", "She dislikes running", "She gave up easily"], "correct_answer": "She is determined", "explanation": "Her persistence despite fatigue shows determination."}, {"id": "PC_004", "subject": "Paragraph Comprehension", "difficulty": "moderate", "question": "Passage: Although Tom forgot his umbrella, he didn’t mind the rain. He enjoyed the cool air and sound of raindrops. \n\nQuestion: How did Tom feel about the rain?", "options": ["Annoyed", "Indifferent", "Happy", "Angry"], "correct_answer": "Happy", "explanation": "Tom enjoyed the rain, suggesting a positive attitude."}, {"id": "PC_005", "subject": "Paragraph Comprehension", "difficulty": "moderate", "question": "Passage: Many people believe coffee originated in Ethiopia. It is now one of the most traded commodities worldwide. \n\nQuestion: According to the passage, where did coffee originate?", "options": ["Brazil", "Ethiopia", "Colombia", "Mexico"], "correct_answer": "Ethiopia", "explanation": "The passage clearly identifies Ethiopia as coffee’s origin."}, {"id": "PC_006", "subject": "Paragraph Comprehension", "difficulty": "hard", "question": "Passage: Although the invention was not immediately successful, it paved the way for future technologies that changed the world. \n\nQuestion: What is implied about the invention?", "options": ["It failed permanently", "It influenced later innovations", "It was forgotten", "It replaced older devices instantly"], "correct_answer": "It influenced later innovations", "explanation": "The phrase 'paved the way' implies its influence on future inventions."}, {"id": "PC_007", "subject": "Paragraph Comprehension", "difficulty": "hard", "question": "Passage: The mountain’s harsh climate and rough terrain make it difficult for most plants to survive. Only the hardiest species endure. \n\nQuestion: What can be inferred about the plants that survive there?", "options": ["They are fragile", "They require a lot of water", "They are resilient", "They grow quickly"], "correct_answer": "They are resilient", "explanation": "The phrase 'hardiest species' indicates resilience."}, {"id": "PC_008", "subject": "Paragraph Comprehension", "difficulty": "moderate", "question": "Passage: The new library was designed with natural light and quiet spaces to encourage reading and study. \n\nQuestion: What was the main goal of the library’s design?", "options": ["To reduce electricity use", "To make reading and studying enjoyable", "To attract tourists", "To hold events"], "correct_answer": "To make reading and studying enjoyable", "explanation": "The design features support comfort and focus for readers."}, {"id": "PC_009", "subject": "Paragraph Comprehension", "difficulty": "easy", "question": "Passage: The desert receives less than 10 inches of rain each year. Despite this, many animals have adapted to live there. \n\nQuestion: What allows animals to survive in the desert?", "options": ["Adaptations", "Frequent rain", "Migration", "Cold weather"], "correct_answer": "Adaptations", "explanation": "The passage mentions animal adaptations as the reason for survival."}, {"id": "PC_010", "subject": "Paragraph Comprehension", "difficulty": "hard", "question": "Passage: Critics argued that the artist’s latest work lacked originality, but fans praised its emotional depth and technique. \n\nQuestion: What best describes the response to the artist’s work?", "options": ["Entirely negative", "Mixed opinions", "Completely positive", "Indifferent"], "correct_answer": "Mixed opinions", "explanation": "The passage describes both criticism and praise, indicating mixed reactions."}, {"id": "AR_011", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "A recipe calls for 3 cups of flour to make 12 cookies. How many cups are needed for 36 cookies?", "options": ["6", "7", "8", "9"], "correct_answer": "9", "explanation": "Proportional: 3 cups → 12 cookies; ×3 → 36 cookies → 3×3 = 9 cups."}, {"id": "AR_012", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "A shirt originally costs $32 and is discounted 25%. What is the sale price?", "options": ["$6.50", "$24.00", "$25.60", "$28.80"], "correct_answer": "$24.00", "explanation": "25% of 32 is 8; 32 − 8 = $24.00."}, {"id": "AR_013", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A tank holds 240 gallons. If it leaks at 3 gallons per hour, how long to drop to 108 gallons?", "options": ["36 hours", "40 hours", "44 hours", "60 hours"], "correct_answer": "44 hours", "explanation": "Loss needed: 240−108=132; 132/3=44 hours."}, {"id": "AR_014", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A jogger runs 2.5 miles in 20 minutes. At the same pace, how far in 1 hour?", "options": ["6.5 miles", "7.0 miles", "7.5 miles", "8.0 miles"], "correct_answer": "7.5 miles", "explanation": "20 min → 2.5 mi; 60 min is ×3 → 7.5 miles."}, {"id": "AR_015", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "A store increases a price by 15% and later reduces the new price by 15%. What is the net effect?", "options": ["2.25% decrease", "No change", "2.25% increase", "5% decrease"], "correct_answer": "2.25% decrease", "explanation": "100→115→97.75; net −2.25%."}, {"id": "AR_016", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A worker earns $15/hour and gets a 10% raise. After 30 hours, how much did they earn?", "options": ["$450", "$475.50", "$495.00", "$510.00"], "correct_answer": "$495.00", "explanation": "New rate: 15×1.10=16.5; 16.5×30=$495."}, {"id": "AR_017", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "If a box holds 24 cans and you need 180 cans, how many full boxes are required?", "options": ["7", "7.5", "8", "9"], "correct_answer": "8", "explanation": "180/24=7.5 → need 8 full boxes."}, {"id": "AR_018", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "Two pumps drain a pool in 6 hours and 8 hours, respectively. Working together, how long?", "options": ["3.4 h", "3.5 h", "3.6 h", "3.8 h"], "correct_answer": "3.4 h", "explanation": "Rates: 1/6+1/8=7/24; time=24/7≈3.43 h ≈ 3.4 h."}, {"id": "AR_019", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A car depreciates 20% the first year and 10% the second year. If initial value is $25,000, what is it after two years?", "options": ["$18,000", "$20,000", "$18,750", "$22,500"], "correct_answer": "$18,000", "explanation": "Year1: 25,000×0.8=20,000; Year2: ×0.9=18,000."}, {"id": "AR_020", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "What is 30% of 250?", "options": ["50", "60", "70", "75"], "correct_answer": "75", "explanation": "0.30×250=75."}, {"id": "AR_021", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A map shows 1 inch equals 12 miles. How many miles is 3.5 inches?", "options": ["30", "36", "40", "42"], "correct_answer": "42", "explanation": "3.5×12=42 miles."}, {"id": "AR_022", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "A merchant mixes 20 lb of coffee at $8/lb with x lb at $12/lb to make a blend at $10/lb. Find x.", "options": ["15 lb", "20 lb", "25 lb", "30 lb"], "correct_answer": "20 lb", "explanation": "Total value: 20*8 + 12x = 10(20+x) → 160+12x=200+10x → x=20."}, {"id": "AR_023", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "A container of juice is 2.5 liters. How many milliliters is this?", "options": ["150 mL", "250 mL", "2,500 mL", "25,000 mL"], "correct_answer": "2,500 mL", "explanation": "1 L = 1000 mL; 2.5 L = 2500 mL."}, {"id": "AR_024", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A cyclist averages 18 mph. How long to travel 27 miles?", "options": ["1 hr", "1.25 hr", "1.5 hr", "1.75 hr"], "correct_answer": "1.5 hr", "explanation": "t=d/r=27/18=1.5 hr."}, {"id": "AR_025", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "Company A sells at 30% profit, Company B sells the same item at 15% loss. If both sell at $230, what is the cost to Company A?", "options": ["$161", "$177", "$190", "$200"], "correct_answer": "$177", "explanation": "For A: 1.30C=230 → C≈176.92 ≈ $177."}, {"id": "AR_026", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A $500 bond grows 4% annually. What is its value after 3 years (simple interest)?", "options": ["$560", "$560.80", "$560.00", "$520.00"], "correct_answer": "$560.00", "explanation": "Simple interest: 500 + 500*(0.04*3)=500+60=560."}, {"id": "AR_027", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "If 3/4 of a class is present and there are 24 students present, how many are in the class?", "options": ["28", "30", "32", "36"], "correct_answer": "32", "explanation": "Let total T; (3/4)T=24 → T=32."}, {"id": "AR_028", "subject": "Arithmetic Reasoning", "difficulty": "hard", "question": "A boat travels 24 miles downstream in 3 hours and the same distance upstream in 4 hours. Find the speed of the current.", "options": ["1 mph", "2 mph", "3 mph", "4 mph"], "correct_answer": "1 mph", "explanation": "Downstream r+w=8; upstream r−w=6; solve → r=7, w=1."}, {"id": "AR_029", "subject": "Arithmetic Reasoning", "difficulty": "moderate", "question": "A contractor needs 1,200 bricks. Packs contain 48 bricks each. How many packs are needed?", "options": ["24", "25", "26", "27"], "correct_answer": "25", "explanation": "1200/48=25 exactly."}, {"id": "AR_030", "subject": "Arithmetic Reasoning", "difficulty": "easy", "question": "What is the total cost of 3 items at $7.50 each plus 8% sales tax?", "options": ["$22.50", "$24.00", "$24.30", "$24.90"], "correct_answer": "$24.30", "explanation": "Subtotal 22.50; tax 1.80; total 24.30."}, {"id": "MK_011", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Solve for x: x + 7 = 19", "options": ["9", "10", "11", "12"], "correct_answer": "12", "explanation": "x=19−7=12."}, {"id": "MK_012", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Simplify: 6(2x + 3)", "options": ["12x + 3", "12x + 18", "8x + 3", "6x + 3"], "correct_answer": "12x + 18", "explanation": "Distribute: 6*2x=12x; 6*3=18."}, {"id": "MK_013", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Evaluate: (5a²)(-2a³)", "options": ["-10a⁵", "-10a⁶", "10a⁵", "10a⁶"], "correct_answer": "-10a⁵", "explanation": "Multiply coeffs and add exponents: -10a⁵."}, {"id": "MK_014", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Factor: x² - 9", "options": ["(x-9)(x+1)", "(x-3)(x+3)", "(x-1)(x+9)", "(x-3)²"], "correct_answer": "(x-3)(x+3)", "explanation": "Difference of squares."}, {"id": "MK_015", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "Solve: 3x - 2 = 4x + 5", "options": ["-7", "7", "-5", "5"], "correct_answer": "-7", "explanation": "Bring x terms together: -2-5 = x → x = -7."}, {"id": "MK_016", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Find the perimeter: rectangle with L=11, W=4", "options": ["15", "22", "24", "30"], "correct_answer": "30", "explanation": "P=2(L+W)=2(15)=30."}, {"id": "MK_017", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Convert 0.75 to a fraction.", "options": ["1/2", "2/3", "3/4", "4/5"], "correct_answer": "3/4", "explanation": "0.75 = 3/4."}, {"id": "MK_018", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "Solve: 2/(x-1) = 1/3", "options": ["x=7", "x=4", "x=2", "x=−5"], "correct_answer": "x=7", "explanation": "Cross-multiply: 2*3 = x-1 → x=7."}, {"id": "MK_019", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "If 4x = 3y and y = 12, find x.", "options": ["6", "8", "9", "12"], "correct_answer": "9", "explanation": "4x=36 → x=9."}, {"id": "MK_020", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "What is the slope of the line y = -3x + 5?", "options": ["-3", "3", "5", "-5"], "correct_answer": "-3", "explanation": "Slope is the coefficient of x."}, {"id": "MK_021", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "Simplify: (x³ y²)/(x y⁵)", "options": ["x²/y³", "x⁴ y⁷", "y³/x²", "x² y³"], "correct_answer": "x²/y³", "explanation": "Subtract exponents: x^(3-1) y^(2-5)=x² y^-3."}, {"id": "MK_022", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Find the area of a triangle with base 10 and height 9.", "options": ["45", "90", "18", "19"], "correct_answer": "45", "explanation": "A=1/2 bh=45."}, {"id": "MK_023", "subject": "Mathematics Knowledge", "difficulty": "easy", "question": "Evaluate: |−14|", "options": ["-14", "0", "14", "28"], "correct_answer": "14", "explanation": "Absolute value is positive magnitude."}, {"id": "MK_024", "subject": "Mathematics Knowledge", "difficulty": "moderate", "question": "Solve: 7x + 5 = 3x + 25", "options": ["3", "4", "5", "6"], "correct_answer": "5", "explanation": "4x=20 → x=5."}, {"id": "MK_025", "subject": "Mathematics Knowledge", "difficulty": "hard", "question": "If the diameter is 10, what is the circumference? (Use π≈3.14)", "options": ["15.7", "25.1", "31.4", "62.8"], "correct_answer": "31.4", "explanation": "C=πd=3.14*10=31.4."}, {"id": "WK_011", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'permit'.", "options": ["forbid", "allow", "ignore", "delay"], "correct_answer": "allow", "explanation": "'Permit' and 'allow' are synonyms."}, {"id": "WK_012", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'reluctant'.", "options": ["eager", "hesitant", "certain", "careless"], "correct_answer": "hesitant", "explanation": "'Reluctant' means unwilling or hesitant."}, {"id": "WK_013", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the opposite of 'ambiguous'.", "options": ["unclear", "obvious", "vague", "doubtful"], "correct_answer": "obvious", "explanation": "'Ambiguous' means unclear; opposite is 'obvious'."}, {"id": "WK_014", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'adverse'.", "options": ["favorable", "hostile", "neutral", "easy"], "correct_answer": "hostile", "explanation": "'Adverse' means harmful or hostile."}, {"id": "WK_015", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'brief'.", "options": ["short", "late", "large", "tall"], "correct_answer": "short", "explanation": "'Brief' means short."}, {"id": "WK_016", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'tenacious'.", "options": ["yielding", "persistent", "gentle", "temporary"], "correct_answer": "persistent", "explanation": "'Tenacious' means persistent."}, {"id": "WK_017", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'invoke'.", "options": ["cite", "repair", "remove", "confuse"], "correct_answer": "cite", "explanation": "'Invoke' can mean to call upon or cite."}, {"id": "WK_018", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'vital'.", "options": ["unnecessary", "important", "casual", "trivial"], "correct_answer": "important", "explanation": "'Vital' means essential or important."}, {"id": "WK_019", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'remedy'.", "options": ["cure", "cause", "harm", "delay"], "correct_answer": "cure", "explanation": "'Remedy' means cure."}, {"id": "WK_020", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'prudent'.", "options": ["reckless", "careful", "secret", "sudden"], "correct_answer": "careful", "explanation": "'Prudent' means careful and wise."}, {"id": "WK_021", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'depart'.", "options": ["arrive", "leave", "enter", "stop"], "correct_answer": "leave", "explanation": "'Depart' means to leave."}, {"id": "WK_022", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'attain'.", "options": ["reach", "lose", "forget", "delay"], "correct_answer": "reach", "explanation": "'Attain' means to achieve or reach."}, {"id": "WK_023", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'candid'.", "options": ["dishonest", "sly", "frank", "silent"], "correct_answer": "frank", "explanation": "'Candid' means frank or honest."}, {"id": "WK_024", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'salient'.", "options": ["minor", "prominent", "late", "slow"], "correct_answer": "prominent", "explanation": "'Salient' means most noticeable or prominent."}, {"id": "PC_011", "subject": "Paragraph Comprehension", "difficulty": "easy", "question": "Passage: The lighthouse’s bright beam warned ships of the rocky shore. Many sailors relied on it during storms.\n\nQuestion: What was the purpose of the lighthouse?", "options": ["To warn ships", "To count waves", "To guide airplanes", "To measure tides"], "correct_answer": "To warn ships", "explanation": "The passage states it warned ships of rocks."}, {"id": "PC_012", "subject": "Paragraph Comprehension", "difficulty": "easy", "question": "Passage: The museum added new exhibits to attract visitors. Attendance increased throughout the summer.\n\nQuestion: What likely caused the increase in attendance?", "options": ["Higher ticket prices", "New exhibits", "Shorter hours", "Bad weather"], "correct_answer": "New exhibits", "explanation": "The cause-and-effect implied is new exhibits → increased attendance."}, {"id": "PC_013", "subject": "Paragraph Comprehension", "difficulty": "moderate", "question": "Passage: Although the athlete started the race slowly, she conserved energy and finished with a strong sprint.\n\nQuestion: Why did the athlete start slowly?", "options": ["She was injured", "She was conserving energy", "She forgot the route", "She was late"], "correct_answer": "She was conserving energy", "explanation": "The passage explicitly says she conserved energy."}, {"id": "PC_014", "subject": "Paragraph Comprehension", "difficulty": "moderate", "question": "Passage: The company shifted to remote work to reduce costs and retain talent. Employee satisfaction later improved.\n\nQuestion: What is a likely benefit mentioned?", "options": ["Lower travel time", "Higher taxes", "More office space", "Less training"], "correct_answer": "Lower travel time", "explanation": "Remote work reduces commuting time."}, {"id": "PC_015", "subject": "Paragraph Comprehension", "difficulty": "hard", "question": "Passage: Despite early skepticism, the new policy yielded measurable gains in productivity without increasing expenses.\n\nQuestion: What best describes the outcome of the policy?", "options": ["Ineffective", "Costly", "Successful", "Uncertain"], "correct_answer": "Successful", "explanation": "Gains in productivity without higher costs indicate success."}, {"subject": "General Science", "question": "Which organelle is primarily responsible for producing ATP in eukaryotic cells?", "options": ["Mitochondrion", "Nucleus", "Ribosome", "Golgi apparatus"], "correct_answer": "Mitochondrion"}, {"subject": "General Science", "question": "Water boils at what temperature at standard atmospheric pressure (1 atm)?", "options": ["100°C (212°F)", "90°C (194°F)", "110°C (230°F)", "80°C (176°F)"], "correct_answer": "100°C (212°F)"}, {"subject": "General Science", "question": "The chemical symbol 'Na' stands for which element?", "options": ["Sodium", "Nitrogen", "Neon", "Nickel"], "correct_answer": "Sodium"}, {"subject": "General Science", "question": "Which phase change describes a solid turning directly into a gas?", "options": ["Sublimation", "Condensation", "Deposition", "Evaporation"], "correct_answer": "Sublimation"}, {"subject": "General Science", "question": "Blood carries oxygen mainly bound to what protein?", "options": ["Hemoglobin", "Insulin", "Keratin", "Albumin"], "correct_answer": "Hemoglobin"}, {"subject": "General Science", "question": "Earth’s seasons are primarily caused by:", "options": ["The tilt of Earth's axis", "Changes in Earth–Sun distance", "Moon’s gravity", "Solar flares"], "correct_answer": "The tilt of Earth's axis"}, {"subject": "General Science", "question": "Which vitamin is crucial for blood clotting?", "options": ["Vitamin K", "Vitamin C", "Vitamin D", "Vitamin A"], "correct_answer": "Vitamin K"}, {"subject": "General Science", "question": "The pH of a neutral aqueous solution at 25°C is approximately:", "options": ["7", "0", "14", "3"], "correct_answer": "7"}, {"subject": "General Science", "question": "What gas do plants primarily take in during photosynthesis?", "options": ["Carbon dioxide", "Oxygen", "Nitrogen", "Hydrogen"], "correct_answer": "Carbon dioxide"}, {"subject": "General Science", "question": "Which of the following is a renewable energy source?", "options": ["Wind", "Coal", "Natural gas", "Uranium"], "correct_answer": "Wind"}, {"subject": "General Science", "question": "Which particle has no electrical charge?", "options": ["Neutron", "Proton", "Electron", "Positron"], "correct_answer": "Neutron"}, {"subject": "General Science", "question": "Which layer of Earth is liquid and composed mainly of iron and nickel?", "options": ["Outer core", "Inner core", "Mantle", "Crust"], "correct_answer": "Outer core"}, {"subject": "General Science", "question": "The unit 'Newton' measures:", "options": ["Force", "Energy", "Power", "Pressure"], "correct_answer": "Force"}, {"subject": "General Science", "question": "Which blood vessels carry blood away from the heart?", "options": ["Arteries", "Veins", "Capillaries", "Venules"], "correct_answer": "Arteries"}, {"subject": "General Science", "question": "The process of cell division that produces gametes is called:", "options": ["Meiosis", "Mitosis", "Binary fission", "Budding"], "correct_answer": "Meiosis"}, {"subject": "General Science", "question": "Which type of bond involves the sharing of electron pairs?", "options": ["Covalent", "Ionic", "Hydrogen", "Metallic"], "correct_answer": "Covalent"}, {"subject": "General Science", "question": "What is the primary function of white blood cells?", "options": ["Fight infection", "Carry oxygen", "Clot blood", "Transport nutrients"], "correct_answer": "Fight infection"}, {"subject": "General Science", "question": "Which gas makes up the largest percentage of Earth’s atmosphere?", "options": ["Nitrogen", "Oxygen", "Argon", "Carbon dioxide"], "correct_answer": "Nitrogen"}, {"subject": "General Science", "question": "The greenhouse effect is caused primarily by which gas?", "options": ["Carbon dioxide", "Oxygen", "Neon", "Helium"], "correct_answer": "Carbon dioxide"}, {"subject": "General Science", "question": "What is the basic unit of heredity?", "options": ["Gene", "Chromosome", "Nucleotide", "Protein"], "correct_answer": "Gene"}, {"subject": "General Science", "question": "In the food chain, organisms that produce their own food are called:", "options": ["Producers", "Consumers", "Decomposers", "Predators"], "correct_answer": "Producers"}, {"subject": "General Science", "question": "Which organ filters blood to produce urine?", "options": ["Kidney", "Liver", "Pancreas", "Spleen"], "correct_answer": "Kidney"}, {"subject": "General Science", "question": "Which of these best describes an acid?", "options": ["Donates H+ in solution", "Accepts H+ in solution", "Donates OH-", "Neutralizes bases only"], "correct_answer": "Donates H+ in solution"}, {"subject": "General Science", "question": "What is the main function of platelets?", "options": ["Blood clotting", "Oxygen transport", "Immunity", "Hormone transport"], "correct_answer": "Blood clotting"}, {"subject": "General Science", "question": "Which law states that energy cannot be created or destroyed?", "options": ["Conservation of energy", "Conservation of mass", "Newton’s 3rd law", "Hooke’s law"], "correct_answer": "Conservation of energy"}, {"subject": "General Science", "question": "Which wave requires a medium to travel?", "options": ["Sound", "Light", "Radio", "Infrared"], "correct_answer": "Sound"}, {"subject": "General Science", "question": "Which part of a plant cell contains chlorophyll?", "options": ["Chloroplast", "Vacuole", "Mitochondria", "Cell wall"], "correct_answer": "Chloroplast"}, {"subject": "General Science", "question": "What is the approximate normal human body temperature in Celsius?", "options": ["37°C", "32°C", "40°C", "25°C"], "correct_answer": "37°C"}, {"subject": "General Science", "question": "Which subatomic particle determines the atomic number?", "options": ["Proton", "Neutron", "Electron", "Positron"], "correct_answer": "Proton"}, {"subject": "General Science", "question": "Which of these is an example of a physical change?", "options": ["Ice melting", "Wood burning", "Iron rusting", "Milk souring"], "correct_answer": "Ice melting"}, {"subject": "Electronics Information", "question": "Ohm’s law relates voltage (V), current (I), and resistance (R) as:", "options": ["V = I × R", "V = I / R", "V = R / I", "I = R / V"], "correct_answer": "V = I × R"}, {"subject": "Electronics Information", "question": "A device that stores electrical charge is a:", "options": ["Capacitor", "Resistor", "Inductor", "Diode"], "correct_answer": "Capacitor"}, {"subject": "Electronics Information", "question": "The unit of electrical power is the:", "options": ["Watt", "Volt", "Ohm", "Ampere"], "correct_answer": "Watt"}, {"subject": "Electronics Information", "question": "A diode primarily allows current to flow in:", "options": ["One direction", "Both directions equally", "Opposite directions alternately", "No direction"], "correct_answer": "One direction"}, {"subject": "Electronics Information", "question": "What does AC stand for in electricity?", "options": ["Alternating Current", "Average Current", "Active Circuit", "Applied Current"], "correct_answer": "Alternating Current"}, {"subject": "Electronics Information", "question": "In a series circuit, the total resistance is:", "options": ["The sum of individual resistances", "Less than any branch", "Equal to the average", "Zero"], "correct_answer": "The sum of individual resistances"}, {"subject": "Electronics Information", "question": "The color bands on a resistor indicate:", "options": ["Resistance value and tolerance", "Voltage rating", "Current limit", "Temperature"], "correct_answer": "Resistance value and tolerance"}, {"subject": "Electronics Information", "question": "Which component resists changes in current?", "options": ["Inductor", "Resistor", "Capacitor", "LED"], "correct_answer": "Inductor"}, {"subject": "Electronics Information", "question": "A short circuit typically results in:", "options": ["Very high current", "Very high resistance", "Zero current", "Open circuit"], "correct_answer": "Very high current"}, {"subject": "Electronics Information", "question": "A transformer changes:", "options": ["AC voltage level", "DC voltage level", "Resistance only", "Frequency only"], "correct_answer": "AC voltage level"}, {"subject": "Electronics Information", "question": "The unit of capacitance is:", "options": ["Farad", "Henry", "Tesla", "Weber"], "correct_answer": "Farad"}, {"subject": "Electronics Information", "question": "What is the typical forward voltage drop of a silicon diode?", "options": ["~0.7 V", "~0.1 V", "~1.5 V", "~3 V"], "correct_answer": "~0.7 V"}, {"subject": "Electronics Information", "question": "Which meter measures current directly in a circuit?", "options": ["Ammeter", "Voltmeter", "Ohmmeter", "Wattmeter"], "correct_answer": "Ammeter"}, {"subject": "Electronics Information", "question": "The relationship for electrical power is:", "options": ["P = V × I", "P = V / I", "P = I / R", "P = R / V"], "correct_answer": "P = V × I"}, {"subject": "Electronics Information", "question": "Which logic gate outputs HIGH only when all inputs are HIGH?", "options": ["AND", "OR", "NOR", "XOR"], "correct_answer": "AND"}, {"subject": "Electronics Information", "question": "A fuse is used to:", "options": ["Protect against overcurrent", "Store energy", "Rectify AC", "Amplify signal"], "correct_answer": "Protect against overcurrent"}, {"subject": "Electronics Information", "question": "Frequency is measured in:", "options": ["Hertz", "Ohms", "Volts", "Amps"], "correct_answer": "Hertz"}, {"subject": "Electronics Information", "question": "Which component can amplify signals?", "options": ["Transistor", "Resistor", "Capacitor", "Inductor"], "correct_answer": "Transistor"}, {"subject": "Electronics Information", "question": "In parallel circuits, voltage across each branch is:", "options": ["The same", "Divided by branches", "Zero", "Double"], "correct_answer": "The same"}, {"subject": "Electronics Information", "question": "LED stands for:", "options": ["Light Emitting Diode", "Low Energy Device", "Linear Electronic Driver", "Light Expansion Diode"], "correct_answer": "Light Emitting Diode"}, {"subject": "Electronics Information", "question": "The symbol Ω stands for:", "options": ["Ohm", "Omega-Volt", "Watt", "Ampere"], "correct_answer": "Ohm"}, {"subject": "Electronics Information", "question": "Rectification converts:", "options": ["AC to DC", "DC to AC", "High V to low V", "Low I to high I"], "correct_answer": "AC to DC"}, {"subject": "Electronics Information", "question": "Which device stores energy in a magnetic field?", "options": ["Inductor", "Capacitor", "Thermistor", "Varistor"], "correct_answer": "Inductor"}, {"subject": "Electronics Information", "question": "The ground reference in a circuit is typically at:", "options": ["0 volts", "1 volt", "Line voltage", "Peak voltage"], "correct_answer": "0 volts"}, {"subject": "Electronics Information", "question": "If V=12 V and R=6 Ω, current I = ?", "options": ["2 A", "0.5 A", "6 A", "12 A"], "correct_answer": "2 A"}, {"subject": "Auto & Shop Information", "question": "Which tool is best for measuring small external diameters?", "options": ["Caliper", "Torque wrench", "Allen key", "Pipe wrench"], "correct_answer": "Caliper"}, {"subject": "Auto & Shop Information", "question": "The component that converts reciprocating motion to rotational motion in an engine is the:", "options": ["Crankshaft", "Camshaft", "Piston", "Valve"], "correct_answer": "Crankshaft"}, {"subject": "Auto & Shop Information", "question": "Thread pitch on a bolt refers to:", "options": ["Distance between threads", "Bolt length", "Head size", "Thread angle"], "correct_answer": "Distance between threads"}, {"subject": "Auto & Shop Information", "question": "A torque wrench is used to:", "options": ["Apply specific tightness to fasteners", "Measure current", "Cut metal", "Set ignition timing"], "correct_answer": "Apply specific tightness to fasteners"}, {"subject": "Auto & Shop Information", "question": "Which system charges the battery while the engine runs?", "options": ["Alternator", "Starter", "Carburetor", "Radiator"], "correct_answer": "Alternator"}, {"subject": "Auto & Shop Information", "question": "A hacksaw is primarily used for cutting:", "options": ["Metal", "Wood", "Ceramic tile", "Glass"], "correct_answer": "Metal"}, {"subject": "Auto & Shop Information", "question": "Which wrench has a closed loop that grips all sides of a nut?", "options": ["Box-end wrench", "Open-end wrench", "Adjustable wrench", "Pipe wrench"], "correct_answer": "Box-end wrench"}, {"subject": "Auto & Shop Information", "question": "Engine oil viscosity rated '10W-30' indicates:", "options": ["Flow at cold and hot temps", "Only thickness at 10°C", "Only thickness at 30°C", "Fuel grade"], "correct_answer": "Flow at cold and hot temps"}, {"subject": "Auto & Shop Information", "question": "The function of the differential is to:", "options": ["Allow wheels to rotate at different speeds", "Increase engine compression", "Reduce tire wear only", "Control air-fuel ratio"], "correct_answer": "Allow wheels to rotate at different speeds"}, {"subject": "Auto & Shop Information", "question": "Which saw is best for cutting curves in wood?", "options": ["Coping saw", "Crosscut saw", "Rip saw", "Back saw"], "correct_answer": "Coping saw"}, {"subject": "Auto & Shop Information", "question": "A feeler gauge is used to measure:", "options": ["Small gaps/clearances", "Voltage", "Fluid pressure", "Torque"], "correct_answer": "Small gaps/clearances"}, {"subject": "Auto & Shop Information", "question": "The device that controls engine air-fuel mixture in older cars is the:", "options": ["Carburetor", "Radiator", "Alternator", "Catalytic converter"], "correct_answer": "Carburetor"}, {"subject": "Auto & Shop Information", "question": "What tool would you use to remove a hex socket screw?", "options": ["Allen wrench", "Phillips screwdriver", "Torx driver", "Chisel"], "correct_answer": "Allen wrench"}, {"subject": "Auto & Shop Information", "question": "Which part converts linear motion from pistons to rotary motion?", "options": ["Crankshaft", "Timing belt", "Oil pan", "Distributor"], "correct_answer": "Crankshaft"}, {"subject": "Auto & Shop Information", "question": "A bench vise is primarily used to:", "options": ["Secure workpieces", "Measure angles", "Cut threads", "Apply torque"], "correct_answer": "Secure workpieces"}, {"subject": "Auto & Shop Information", "question": "Which metal joining process uses filler rod and no melting of base metal?", "options": ["Brazing", "Fusion welding", "Forging", "Soldering only"], "correct_answer": "Brazing"}, {"subject": "Auto & Shop Information", "question": "A tap and die set is used to:", "options": ["Cut internal/external threads", "Measure torque", "Sand surfaces", "Check runout"], "correct_answer": "Cut internal/external threads"}, {"subject": "Auto & Shop Information", "question": "The radiator’s main function is to:", "options": ["Dissipate engine heat", "Increase horsepower", "Filter oil", "Ignite the mixture"], "correct_answer": "Dissipate engine heat"}, {"subject": "Auto & Shop Information", "question": "The timing belt synchronizes:", "options": ["Crankshaft and camshaft", "Alternator and battery", "Radiator and water pump", "Pistons and spark plugs directly"], "correct_answer": "Crankshaft and camshaft"}, {"subject": "Auto & Shop Information", "question": "Which brake system uses hydraulic pressure?", "options": ["Disc/drum brakes", "Parking brake only", "Mechanical drums only", "Electric braking only"], "correct_answer": "Disc/drum brakes"}, {"subject": "Auto & Shop Information", "question": "What is the purpose of a gasket?", "options": ["Seal between two surfaces", "Increase friction", "Lubricate parts", "Conduct electricity"], "correct_answer": "Seal between two surfaces"}, {"subject": "Auto & Shop Information", "question": "Which tool checks the angle of a cut or joint?", "options": ["Protractor/try square", "Feeler gauge", "Micrometer", "Pulley"], "correct_answer": "Protractor/try square"}, {"subject": "Auto & Shop Information", "question": "Shock absorbers primarily control:", "options": ["Suspension oscillations", "Engine compression", "Steering angle", "Tire pressure"], "correct_answer": "Suspension oscillations"}, {"subject": "Auto & Shop Information", "question": "A bandsaw is commonly used for:", "options": ["Smooth curved cuts", "Precision drilling", "Driving screws", "Thread cutting"], "correct_answer": "Smooth curved cuts"}, {"subject": "Auto & Shop Information", "question": "Which component reduces tailpipe emissions?", "options": ["Catalytic converter", "Muffler", "Alternator", "Intake manifold"], "correct_answer": "Catalytic converter"}, {"subject": "Auto & Shop Information", "question": "Which tool would you choose to remove a stubborn nut?", "options": ["Breaker bar", "Allen key", "Feeler gauge", "Tri-square"], "correct_answer": "Breaker bar"}, {"subject": "Auto & Shop Information", "question": "A micrometer is best suited to measure:", "options": ["Very small thickness/diameter", "Torque", "AC voltage", "Thread pitch"], "correct_answer": "Very small thickness/diameter"}, {"subject": "Auto & Shop Information", "question": "The serpentine belt typically drives:", "options": ["Multiple accessories", "Only the camshaft", "Only the crankshaft", "The radiator core"], "correct_answer": "Multiple accessories"}, {"subject": "Auto & Shop Information", "question": "A cold chisel is used for:", "options": ["Cutting metal when cold", "Cutting hot metal only", "Carving wood", "Sharpening drill bits"], "correct_answer": "Cutting metal when cold"}, {"subject": "Auto & Shop Information", "question": "Which fluid is used in hydraulic brakes?", "options": ["Brake fluid", "Engine oil", "Coolant", "ATF only"], "correct_answer": "Brake fluid"}, {"subject": "Mechanical Comprehension", "question": "Increasing the length of a lever arm generally allows you to:", "options": ["Apply the same force to produce more torque", "Reduce torque with the same force", "Eliminate friction", "Increase speed only"], "correct_answer": "Apply the same force to produce more torque"}, {"subject": "Mechanical Comprehension", "question": "A pulley system with two supporting ropes (ideal) halves the:", "options": ["Effort needed", "Load weight", "Distance traveled by load", "Mechanical advantage"], "correct_answer": "Effort needed"}, {"subject": "Mechanical Comprehension", "question": "Gears of different sizes are used primarily to:", "options": ["Change torque and speed", "Reduce friction to zero", "Convert AC to DC", "Store energy"], "correct_answer": "Change torque and speed"}, {"subject": "Mechanical Comprehension", "question": "Friction is generally higher for which surfaces?", "options": ["Rough surfaces", "Smooth lubricated surfaces", "Polished surfaces", "Ice on metal"], "correct_answer": "Rough surfaces"}, {"subject": "Mechanical Comprehension", "question": "Hydraulic systems work on which principle?", "options": ["Pascal’s law", "Archimedes’ principle", "Bernoulli’s principle", "Hooke’s law"], "correct_answer": "Pascal’s law"}, {"subject": "Mechanical Comprehension", "question": "A block and tackle increases mechanical advantage by:", "options": ["Using multiple pulleys", "Reducing rope strength", "Widening the rope", "Changing material"], "correct_answer": "Using multiple pulleys"}, {"subject": "Mechanical Comprehension", "question": "If gear A (10 teeth) drives gear B (20 teeth), gear B will:", "options": ["Turn at half the speed, double torque", "Turn at double speed", "Turn same speed", "Reverse direction and same torque"], "correct_answer": "Turn at half the speed, double torque"}, {"subject": "Mechanical Comprehension", "question": "A spring that obeys Hooke’s law has force proportional to:", "options": ["Displacement", "Velocity", "Mass", "Temperature"], "correct_answer": "Displacement"}, {"subject": "Mechanical Comprehension", "question": "In fluids, pressure at a given depth depends on:", "options": ["Depth and density", "Surface area only", "Container shape", "Fluid color"], "correct_answer": "Depth and density"}, {"subject": "Mechanical Comprehension", "question": "A screw is essentially a:", "options": ["Inclined plane wrapped around a cylinder", "Second-class lever", "Pulley system", "Gear pump"], "correct_answer": "Inclined plane wrapped around a cylinder"}, {"subject": "Mechanical Comprehension", "question": "Ball bearings reduce friction by:", "options": ["Rolling contact", "Increasing surface area", "Fluid drag", "Magnetic levitation"], "correct_answer": "Rolling contact"}, {"subject": "Mechanical Comprehension", "question": "The unit of pressure is:", "options": ["Pascal (Pa)", "Newton (N)", "Joule (J)", "Watt (W)"], "correct_answer": "Pascal (Pa)"}, {"subject": "Mechanical Comprehension", "question": "Work is defined as force times:", "options": ["Distance", "Time", "Mass", "Area"], "correct_answer": "Distance"}, {"subject": "Mechanical Comprehension", "question": "Power is the rate of doing work, measured in:", "options": ["Watts", "Joules", "Newtons", "Pascals"], "correct_answer": "Watts"}, {"subject": "Mechanical Comprehension", "question": "A first-class lever has the fulcrum:", "options": ["Between effort and load", "At one end with load in middle", "At one end with effort in middle", "Coincident with effort"], "correct_answer": "Between effort and load"}, {"subject": "Mechanical Comprehension", "question": "Hydraulic jacks multiply force because:", "options": ["Pressure is transmitted equally in fluids", "Liquids have no mass", "Air compresses easily", "Friction is eliminated"], "correct_answer": "Pressure is transmitted equally in fluids"}, {"subject": "Mechanical Comprehension", "question": "If torque = force × lever arm, doubling the lever arm will:", "options": ["Double the torque", "Halve the torque", "Not change torque", "Reduce force only"], "correct_answer": "Double the torque"}, {"subject": "Mechanical Comprehension", "question": "A gear train that increases speed will:", "options": ["Decrease torque", "Increase torque", "Keep torque same", "Reverse torque direction only"], "correct_answer": "Decrease torque"}, {"subject": "Mechanical Comprehension", "question": "The mechanical advantage (ideal) of a ramp is:", "options": ["Length/height", "Height/length", "Width/height", "Height/width"], "correct_answer": "Length/height"}, {"subject": "Mechanical Comprehension", "question": "When fluid flows faster, its static pressure:", "options": ["Decreases (Bernoulli)", "Increases", "Stays constant", "Becomes zero"], "correct_answer": "Decreases (Bernoulli)"}, {"subject": "Mechanical Comprehension", "question": "The center of gravity is the point where:", "options": ["Weight acts as if concentrated", "Friction is zero", "Maximum torque occurs", "Velocity is zero"], "correct_answer": "Weight acts as if concentrated"}, {"subject": "Mechanical Comprehension", "question": "A second-class lever places the load:", "options": ["Between fulcrum and effort", "At the fulcrum", "Beyond the effort", "Between two fulcrums"], "correct_answer": "Between fulcrum and effort"}, {"subject": "Mechanical Comprehension", "question": "A third-class lever has the effort:", "options": ["Between fulcrum and load", "At the end opposite the fulcrum", "Coincident with load", "Beyond the load"], "correct_answer": "Between fulcrum and load"}, {"subject": "Mechanical Comprehension", "question": "Ideal mechanical advantage of a block-and-tackle equals:", "options": ["Number of supporting strands", "Number of pulleys", "Length of rope", "Weight of load"], "correct_answer": "Number of supporting strands"}, {"subject": "Mechanical Comprehension", "question": "Reducing gear ratio from 4:1 to 2:1 does what to output torque (ideal)?", "options": ["Halves it", "Doubles it", "No change", "Triples it"], "correct_answer": "Halves it"}, {"subject": "Mechanical Comprehension", "question": "A cam converts:", "options": ["Rotary motion to reciprocating", "Electrical to mechanical", "Reciprocating to fluid flow", "Heat to electricity"], "correct_answer": "Rotary motion to reciprocating"}, {"subject": "Mechanical Comprehension", "question": "The pitch of a screw affects its:", "options": ["Mechanical advantage and speed", "Material strength only", "Color", "Lubrication needs only"], "correct_answer": "Mechanical advantage and speed"}, {"subject": "Mechanical Comprehension", "question": "Which simple machine uses a wheel with a rope over it?", "options": ["Pulley", "Inclined plane", "Wedge", "Lever"], "correct_answer": "Pulley"}, {"subject": "Mechanical Comprehension", "question": "In uniform beams, maximum bending stress occurs at:", "options": ["The surface (outer fibers)", "Neutral axis", "Center of mass only", "Support only"], "correct_answer": "The surface (outer fibers)"}, {"subject": "Mechanical Comprehension", "question": "Hydraulic brake systems increase force by using:", "options": ["A larger output piston area", "Smaller output piston area", "Longer lever only", "Higher temperature"], "correct_answer": "A larger output piston area"}, {"subject": "Paragraph Comprehension", "question": "The museum’s new exhibit focuses on everyday inventions that quietly changed how people live—items like the zipper, the paperclip, and the ballpoint pen. While none of these objects seems remarkable at first glance, each solved a persistent problem with a design so simple it became nearly invisible.\n\nWhat is the main idea of the paragraph?", "options": ["Simple inventions can have a big impact on daily life", "Museums should focus on famous inventions only", "The ballpoint pen is the most important invention", "Inventions must be complex to be useful"], "correct_answer": "Simple inventions can have a big impact on daily life"}, {"subject": "Paragraph Comprehension", "question": "After months of drought, the first rainfall didn’t merely moisten the ground—it transformed it. Dormant seeds split open, and within days a faint green haze spread across the valley, proof that life had been waiting just beneath the dust.\n\nWhat does the author suggest about the landscape before the rain?", "options": ["It contained latent life ready to grow", "It was permanently barren", "It was flooded recently", "It was covered with thick grass"], "correct_answer": "It contained latent life ready to grow"}, {"subject": "Paragraph Comprehension", "question": "Many people think memory works like a recorder, but research shows it is reconstructive. Each time we remember, we rebuild the memory, sometimes adding details that feel true even when they are not.\n\nWhich statement best reflects the author’s point?", "options": ["Memory can change each time we recall something", "Memory stores information perfectly", "Memories fade but never change", "People cannot trust any memories"], "correct_answer": "Memory can change each time we recall something"}, {"subject": "Paragraph Comprehension", "question": "The lighthouse stood not to challenge the sea but to partner with it, translating danger into visible warnings. Its steady beam did not calm the storm; it simply helped sailors navigate through it.\n\nThe lighthouse is described as a 'partner' to emphasize that it:", "options": ["Guides sailors without controlling the sea", "Controls the weather", "Signals only during calm seas", "Replaces navigational charts"], "correct_answer": "Guides sailors without controlling the sea"}, {"subject": "Paragraph Comprehension", "question": "Volunteers removed invasive plants from the field, making space for native wildflowers. By summer, the return of pollinators showed the ecosystem was beginning to recover.\n\nWhat indicates the project’s success?", "options": ["The return of pollinators", "The size of the field", "The number of volunteers", "The presence of invasive plants"], "correct_answer": "The return of pollinators"}, {"id": "WK_025", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'concise'.", "options": ["brief", "rare", "late", "unclear"], "correct_answer": "brief", "explanation": "'Concise' is a synonym of 'brief' in common usage."}, {"id": "WK_026", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'benevolent'.", "options": ["kind", "rare", "late", "unclear"], "correct_answer": "kind", "explanation": "'Benevolent' is a synonym of 'kind' in common usage."}, {"id": "WK_027", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'elated'.", "options": ["joyful", "rare", "late", "unclear"], "correct_answer": "joyful", "explanation": "'Elated' is a synonym of 'joyful' in common usage."}, {"id": "WK_028", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'relevant'.", "options": ["pertinent", "rare", "late", "unclear"], "correct_answer": "pertinent", "explanation": "'Relevant' is a synonym of 'pertinent' in common usage."}, {"id": "WK_029", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'coerce'.", "options": ["force", "rare", "late", "unclear"], "correct_answer": "force", "explanation": "'Coerce' is a synonym of 'force' in common usage."}, {"id": "WK_030", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'skeptical'.", "options": ["doubtful", "rare", "late", "unclear"], "correct_answer": "doubtful", "explanation": "'Skeptical' is a synonym of 'doubtful' in common usage."}, {"id": "WK_031", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'hinder'.", "options": ["impede", "rare", "late", "unclear"], "correct_answer": "impede", "explanation": "'Hinder' is a synonym of 'impede' in common usage."}, {"id": "WK_032", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'concur'.", "options": ["agree", "rare", "late", "unclear"], "correct_answer": "agree", "explanation": "'Concur' is a synonym of 'agree' in common usage."}, {"id": "WK_033", "subject": "Word Knowledge", "difficulty": "hard", "question": "Select the word that means the same as 'arduous'.", "options": ["difficult", "rare", "late", "unclear"], "correct_answer": "difficult", "explanation": "'Arduous' is a synonym of 'difficult' in common usage."}, {"id": "WK_034", "subject": "Word Knowledge", "difficulty": "easy", "question": "Select the word that means the same as 'precursor'.", "options": ["forerunner", "rare", "late", "unclear"], "correct_answer": "forerunner", "explanation": "'Precursor' is a synonym of 'forerunner' in common usage."}, {"id": "WK_035", "subject": "Word Knowledge", "difficulty": "moderate", "question": "Select the word that means the same as 'frugal'.", "options": ["thrifty", "rare", "late", "unclear"], "correct_answer": "thrifty", "explanation": "'Frugal' is a synonym of 'thrifty' in common usage."}]</script>
+
+<script>
+const el = id => document.getElementById(id);
+function view(id){ ['home','recruiter','applicant'].forEach(s=>el(s).classList.add('hidden')); el(id).classList.remove('hidden'); }
+
+const store = { get:(k,f)=>{ try{ return JSON.parse(localStorage.getItem(k)) ?? f }catch{ return f } }, set:(k,v)=>localStorage.setItem(k, JSON.stringify(v)), now:()=>Date.now() };
+const KEYS = { codes:'asvab.codes.v8', results:'asvab.results.v8' };
+
+const RECRUITER_HASH="b0b4ef21c96bb7d37d97760f2cef1f31f17604c2ae3e762b2a9f4f158858a683", SALT_PREFIX="s1:";
+async function sha256Hex(str){ const data=new TextEncoder().encode(str); const h=await crypto.subtle.digest('SHA-256', data); return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function recruiterLogin(){ const raw=(el('recruiterPass').value||''); const guess=await sha256Hex(SALT_PREFIX+raw); if(guess===RECRUITER_HASH){ el('recruiterLoginMsg').textContent=''; el('recruiterPass').value=''; renderCodes(); renderResults(); el('bank-count').textContent = JSON.parse(document.getElementById('asvab-bank').textContent).length; view('recruiter'); } else { el('recruiterLoginMsg').textContent='Incorrect passcode.'; } }
+function logoutRecruiter(){ el('recruiterPass').value=''; view('home'); }
+
+function prettyMode(m){ return m==='short'?'Short (40)' : m==='core'?'Core (105)' : m==='full'?'Full (225)' : m; }
+const SUBJECT_LABELS={WK:'Word Knowledge', AR:'Arithmetic Reasoning', PC:'Paragraph Comprehension', MK:'Mathematics Knowledge', GS:'General Science', EI:'Electronics Information', AS:'Auto & Shop', MC:'Mechanical Comprehension'};
+
+function newCode({name='', motivator='Unknown', note='', mode='short'}){ const code=(Math.floor(100000 + Math.random()*900000)).toString(); const expiresAt=store.now()+24*60*60*1000; const rec={code,name,motivator,note,mode,used:false,revoked:false,createdAt:store.now(),expiresAt}; const codes=store.get(KEYS.codes,[]); codes.unshift(rec); store.set(KEYS.codes,codes); return rec; }
+function markCodeUsed(code){ const codes=store.get(KEYS.codes,[]); const i=codes.findIndex(c=>c.code===code); if(i>-1){ codes[i].used=true; store.set(KEYS.codes,codes); } }
+function revokeCode(code){ const codes=store.get(KEYS.codes,[]); const i=codes.findIndex(c=>c.code===code); if(i>-1){ codes[i].revoked=true; store.set(KEYS.codes,codes); } renderCodes(); }
+function canUseCode(code){ const rec=store.get(KEYS.codes,[]).find(c=>c.code===code); if(!rec) return {ok:false,msg:'Code not found.'}; if(rec.revoked) return {ok:false,msg:'Code revoked.'}; if(rec.used) return {ok:false,msg:'Code already used.'}; if(rec.expiresAt<store.now()) return {ok:false,msg:'Code expired.'}; return {ok:true,rec}; }
+
+document.getElementById('gen-code').addEventListener('click', ()=>{ const mode=el('test-mode').value; const name=el('app-name').value.trim(); const motivator=el('motivator').value; const note=el('new-code-note').value.trim(); const rec=newCode({name,motivator,note,mode}); renderCodes(); alert('Applicant code: '+rec.code+'\nName: '+(rec.name||'—')+'\nMotivator: '+rec.motivator+'\nTest: '+prettyMode(mode)+'\nNote: '+(rec.note||'—')); });
+
+function renderCodes(){ const codes=store.get(KEYS.codes,[]); const tbody=el('codes-tbody'); tbody.innerHTML=''; for(const c of codes){ const status=c.revoked?'Revoked':c.used?'Used':(c.expiresAt<store.now()?'Expired':'Active'); const tr=document.createElement('tr'); tr.innerHTML=`<td><code>${c.code}</code></td><td>${c.name||'—'}</td><td>${c.motivator||'Unknown'}</td><td>${prettyMode(c.mode)}</td><td>${c.note||'—'}</td><td>${status} ${(!c.used&&!c.revoked)? `<button data-revoke="${c.code}">Revoke</button>`:''}</td><td>${new Date(c.expiresAt).toLocaleString()}</td>`; tbody.appendChild(tr); } tbody.querySelectorAll('button[data-revoke]').forEach(btn=>btn.addEventListener('click',()=>revokeCode(btn.dataset.revoke))); }
+
+let currentApplicant=null;
+async function startApplicant(){ const code=(el('appCode').value||'').trim(); const verdict=canUseCode(code); if(!verdict.ok){ el('appMsg').textContent=verdict.msg; return; } markCodeUsed(code); currentApplicant={ code, name:verdict.rec.name||'Anonymous', motivator:verdict.rec.motivator||'Unknown', note:verdict.rec.note||'', mode:verdict.rec.mode }; el('appMsg').textContent=''; el('applicant-mode-line').textContent='Authorized test: '+prettyMode(currentApplicant.mode); view('applicant'); launchRunner(); }
+
+function getBank(){ const tag=document.getElementById('asvab-bank'); if(!tag) return null; try{ return JSON.parse(tag.textContent) }catch{ return null } }
+
+const MAP_LONG_TO_CODE={'Word Knowledge':'WK','Arithmetic Reasoning':'AR','Paragraph Comprehension':'PC','Mathematics Knowledge':'MK','General Science':'GS','Electronics Information':'EI','Auto & Shop Information':'AS','Mechanical Comprehension':'MC','Auto & Shop':'AS','Auto and Shop':'AS','Auto/Shop':'AS','Mechanical':'MC'};
+function strictCodeFromSubject(s){ if(!s) return null; const sub=String(s).trim(); const code2=sub.slice(0,2).toUpperCase(); const CODES=['WK','AR','PC','MK','GS','EI','AS','MC']; if(CODES.includes(code2)&&sub.length<=3) return code2; return MAP_LONG_TO_CODE[sub]||null; }
+
+function normalizeBank(raw){ const out=[]; for(const q of raw){ const code=strictCodeFromSubject(q.subject||q.subject_code); if(!code) continue; const options=q.options||q.choices||[]; if(!options||options.length<2) continue; let correct_index=-1; if(typeof q.correct_index==='number') correct_index=q.correct_index; else if(q.correct_answer){ const ans=String(q.correct_answer).trim(); correct_index=options.findIndex(o=>String(o).trim()===ans); } out.push({ id:q.id||crypto.randomUUID(), subject:code, text:q.question||q.text||'', options, correct_index }); } return out; }
+
+const SHORT_ALLOWED=new Set(['AR','MK','WK','PC']); const CORE_ALLOWED=new Set(['AR','MK','WK','PC']);
+const FULL_MINS={ WK:35, AR:30, PC:15, MK:25, GS:25, EI:20, AS:25, MC:25 };
+const SHORT_COUNTS={ WK:10, AR:10, PC:10, MK:10 };
+const CORE_COUNTS={ WK:35, AR:30, PC:15, MK:25 };
+
+let runner={ bank:[], items:[], answers:[], idx:0 };
+
+function launchRunner(){ const bankRaw=getBank(); if(!bankRaw){ showNoBank(); return; } runner.bank=normalizeBank(bankRaw); runner.items=selectForMode(runner.bank, currentApplicant.mode); if(!runner.items.length){ showNoBank(); return; } runner.answers=new Array(runner.items.length).fill(null); runner.idx=0; el('qtotal').textContent=runner.items.length; el('runner').classList.remove('hidden'); el('post-submit').classList.add('hidden'); el('applicant-summary').classList.add('hidden'); renderCurrentQuestion(); }
+function showNoBank(){ el('runner').classList.add('hidden'); el('post-submit').classList.remove('hidden'); el('post-submit').innerHTML='<h3>Question bank not found</h3>'; }
+
+function selectForMode(bank, mode){ const bySubj=groupBy(bank,'subject'); const out=[]; function takeFrom(subj,n){ const pool=(bySubj[subj]||[]).slice(); shuffle(pool); return pool.slice(0,n);} if(mode==='short'){ for(const [k,n] of Object.entries(SHORT_COUNTS)) out.push(...takeFrom(k,n)); } else if(mode==='core'){ for(const [k,n] of Object.entries(CORE_COUNTS)) out.push(...takeFrom(k,n)); } else { for(const [k,n] of Object.entries(FULL_MINS)) out.push(...takeFrom(k,n)); const need=225-out.length; if(need>0){ const selected=new Set(out.map(q=>q.id)); const remaining=bank.filter(q=>!selected.has(q.id)); shuffle(remaining); out.push(...remaining.slice(0,need)); } } if(mode==='short') return shuffle(out.filter(q=>SHORT_ALLOWED.has(q.subject))); if(mode==='core') return shuffle(out.filter(q=>CORE_ALLOWED.has(q.subject))); return shuffle(out); }
+function groupBy(arr,key){ const m={}; for(const it of arr){ const k=it[key]; (m[k]||(m[k]=[])).push(it);} return m;}
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
+
+function renderCurrentQuestion(){ const i=runner.idx; const q=runner.items[i]; el('qnum').textContent=i+1; el('subject-badge').textContent=SUBJECT_LABELS[q.subject]||q.subject; el('qtext').textContent=q.text; const ch=el('choices'); ch.innerHTML=''; q.options.forEach((opt,idx)=>{ const wrap=document.createElement('label'); wrap.className='choice'; const input=document.createElement('input'); input.type='radio'; input.name='choice'; input.value=idx; if(runner.answers[i]===idx) input.checked=true; input.addEventListener('change',()=>{ runner.answers[i]=idx; updateNavButtons(); }); const span=document.createElement('div'); span.textContent=opt; wrap.appendChild(input); wrap.appendChild(span); ch.appendChild(wrap); }); updateNavButtons(); const pct=Math.round(((i)/runner.items.length)*100); el('progress-bar').style.width=pct+'%'; }
+function updateNavButtons(){ el('prevBtn').disabled = runner.idx===0; const isLast=runner.idx===runner.items.length-1; el('saveNextBtn').classList.toggle('hidden',isLast); el('submitBtn').classList.toggle('hidden',!isLast); el('saveNextBtn').disabled=(runner.answers[runner.idx]==null); el('submitBtn').disabled=(runner.answers[runner.idx]==null); }
+document.getElementById('prevBtn').addEventListener('click',()=>{ if(runner.idx>0){ runner.idx--; renderCurrentQuestion(); } });
+document.getElementById('saveNextBtn').addEventListener('click',()=>{ if(runner.answers[runner.idx]==null) return; if(runner.idx<runner.items.length-1){ runner.idx++; renderCurrentQuestion(); } });
+document.getElementById('submitBtn').addEventListener('click', submitTest);
+
+function submitTest(){ el('runner').classList.add('hidden'); el('post-submit').classList.remove('hidden'); const subCorrect={WK:0,AR:0,PC:0,MK:0,GS:0,EI:0,AS:0,MC:0}; const subTotal={WK:0,AR:0,PC:0,MK:0,GS:0,EI:0,AS:0,MC:0}; runner.items.forEach((q,i)=>{ subTotal[q.subject]++; if(runner.answers[i]===q.correct_index) subCorrect[q.subject]++; }); const pct=(c,t)=> (t>0? Math.round((c/t)*100) : 0); const subPct={}; Object.keys(subTotal).forEach(s=> subPct[s]=pct(subCorrect[s],subTotal[s])); const VE=Math.round((subPct.WK+subPct.PC)/2); const raw=2*VE+subPct.AR+subPct.MK; const afqt=Math.max(0,Math.min(99, Math.round((raw/400)*99))); el('afqt-bar').style.width=afqt+'%'; el('afqt-val').innerHTML='<strong>'+afqt+'</strong>'; el('post-submit').classList.add('hidden'); el('applicant-summary').classList.remove('hidden'); const results=store.get(KEYS.results,[]); results.unshift({ id:crypto.randomUUID(), at:store.now(), applicant: currentApplicant?.name||'Anonymous', code: currentApplicant?.code||'—', motivator: currentApplicant?.motivator||'Unknown', note: currentApplicant?.note||'', mode: currentApplicant?.mode||'short', sub: subPct, afqt: afqt }); store.set(KEYS.results, results); renderResults(); }
+
+function renderResults(){ const rows=store.get(KEYS.results,[]); const tbody=el('results-tbody'); tbody.innerHTML=''; for(const r of rows){ const tr=document.createElement('tr'); tr.innerHTML=`<td>${r.applicant||'—'}</td><td>${r.code||'—'}</td><td>${r.motivator||'Unknown'}</td><td>${prettyMode(r.mode||'short')}</td><td>${r.note||'—'}</td><td>${r.afqt}</td>`; tbody.appendChild(tr);} }
+document.getElementById('export-json').addEventListener('click',()=>{ const blob=new Blob([JSON.stringify(store.get(KEYS.results,[]),null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='asvab_results.json'; a.click(); URL.revokeObjectURL(url); });
+
+view('home');
+</script>
+
+<script>
+/* EXT: Applicant persistent Exit button (non-invasive) */
+(function(){
+  'use strict';
+  function ensureExitButton(){
+    var app = document.getElementById('applicant');
+    if (!app) return; // only add in applicant view container
+    if (!document.getElementById('exit-to-home')){
+      var btn = document.createElement('button');
+      btn.id = 'exit-to-home';
+      btn.type = 'button';
+      btn.textContent = 'Exit';
+      // Place the button at the top of the applicant container
+      app.style.position = app.style.position || 'relative';
+      app.appendChild(btn);
+      btn.addEventListener('click', function(){
+        try {
+          // Return to login/home without altering any other logic
+          var home = document.getElementById('home');
+          var recruiter = document.getElementById('recruiter');
+          if (document.getElementById('applicant')) document.getElementById('applicant').classList.add('hidden');
+          if (recruiter) recruiter.classList.add('hidden');
+          if (home) home.classList.remove('hidden');
+          // Optional: clear applicant view scroll position
+          window.scrollTo({top:0, behavior:'instant'});
+        } catch(e){ console.warn('Exit-to-home failed', e); }
+      });
+    }
+  }
+  function initExitButton(){
+    try { ensureExitButton(); } catch(e){}
+  }
+  window.addEventListener('DOMContentLoaded', initExitButton);
+  window.addEventListener('hashchange', initExitButton);
+})();
+</script>
+
+</body>
+</html>
