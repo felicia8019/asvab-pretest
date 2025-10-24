@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>AFQT Results — Dark Tech Preview</title>
+  <style>
+    :root{
+      --bg:#0b0d10;           /* near-black */
+      --panel:#12151a;        /* dark panel */
+      --panel-2:#161a20;      /* alt panel */
+      --text:#e6ebf0;         /* light text */
+      --muted:#9aa4af;        /* muted text */
+      --line:#1e242c;         /* panel border */
+      --blue:#07d5ff;         /* neon tech blue */
+      --blue-2:#00a8e8;       /* deeper tech blue */
+      --barbg:#101419;
+    }
+    *{ box-sizing:border-box }
+    body{ margin:0; background:var(--bg); color:var(--text); font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif; }
+    .wrap{ max-width:980px; margin:28px auto; padding:0 18px; }
+    .card{ background:linear-gradient(180deg, var(--panel), var(--panel-2)); border:1px solid var(--line); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.35); overflow:hidden; }
+    .head{ padding:18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
+    .h1{ margin:0; font-size:1.1rem; letter-spacing:.2px; color:var(--muted); }
+    .afqt-bignum{ font-weight:900; font-size:2.2rem; color:#fff; text-shadow:0 0 16px rgba(7,213,255,.35); }
+    .body{ padding:18px; }
+    .label{ font-size:.92rem; color:var(--muted); margin-bottom:8px; }
+    .afqt-line{ display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; margin:8px 0 14px; }
+    .afqt-pill{ padding:4px 10px; border-radius:999px; border:1px solid rgba(7,213,255,.25); background:rgba(7,213,255,.07); color:#c9f5ff; font-weight:700; }
+    .bar{ position:relative; height:12px; background:var(--barbg); border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+    .bar > b{ position:absolute; left:0; top:0; bottom:0; width:0%; background:linear-gradient(90deg, var(--blue), var(--blue-2)); box-shadow:0 0 18px rgba(7,213,255,.35) inset; transition:width .7s cubic-bezier(.2,.8,.2,1); }
+    .grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-top:16px; }
+    .cell{ border:1px solid var(--line); border-radius:12px; padding:12px; background:rgba(255,255,255,.02); }
+    .cell b{ display:block; color:#dfe7ee; }
+    .muted{ color:var(--muted); }
+    /* raw counts line */
+    .rawcounts-line { margin-top:14px; padding:10px 12px; border:1px dashed rgba(7,213,255,.35); border-radius:12px;
+      background:rgba(7,213,255,.04); font-size:0.98rem; display:flex; flex-wrap:wrap; gap:10px; align-items:center;}
+    .rawbadge{ font-weight:800; letter-spacing:.2px; padding:4px 10px; border-radius:999px; background:rgba(7,213,255,.08); border:1px solid rgba(7,213,255,.35); color:#e9fbff; }
+    .rawlabel{ color:#bfefff; margin-right:2px; }
+    .foot{ padding:16px 18px; border-top:1px solid var(--line); background:rgba(255,255,255,.02); display:flex; align-items:center; justify-content:space-between;}
+    .note{ color:var(--muted); font-size:.9rem; }
+    .btn{ display:inline-block; padding:10px 14px; border:1px solid rgba(7,213,255,.4); border-radius:10px; background:rgba(7,213,255,.08);
+      color:#e6fbff; text-decoration:none; font-weight:800; letter-spacing:.3px; box-shadow:0 0 18px rgba(7,213,255,.12) inset; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="head">
+        <div class="h1">Applicant Results — AFQT Summary (Preview)</div>
+        <div class="afqt-bignum" id="afqt-big">--%</div>
+      </div>
+      <div class="body" id="applicant-summary">
+        <div class="afqt-line">
+          <span class="label">AFQT Score:</span>
+          <span class="afqt-pill" id="afqt-val">--%</span>
+          <span class="muted" id="afqt-cat"></span>
+        </div>
+        <div class="bar" aria-label="AFQT percentile bar"><b id="afqt-bar"></b></div>
+
+        <div class="grid">
+          <div class="cell"><b>AR</b><span class="muted" id="val-ar">—</span></div>
+          <div class="cell"><b>MK</b><span class="muted" id="val-mk">—</span></div>
+          <div class="cell"><b>WK</b><span class="muted" id="val-wk">—</span></div>
+          <div class="cell"><b>PC</b><span class="muted" id="val-pc">—</span></div>
+          <div class="cell"><b>VE</b><span class="muted" id="val-ve">—</span></div>
+        </div>
+
+        <div id="subtest-breakdown-content"></div>
+      </div>
+      <div class="foot">
+        <span class="note">Dark Tech preview with mock data. In the real app, values come from the grader.</span>
+        <a class="btn" href="#" onclick="demo();return false;">Run Demo Again</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // === GoodCalculators-compatible helpers ===
+  (function(){
+    const veChart = [
+      {min:0, max:3, ve:20},{min:4, max:5, ve:21},{min:6, max:9, ve:22},
+      {min:10, max:11, ve:25},{min:12, max:13, ve:27},{min:14, max:15, ve:29},
+      {min:16, max:17, ve:31},{min:18, max:19, ve:32},{min:20, max:21, ve:34},
+      {min:22, max:23, ve:36},{min:24, max:25, ve:38},{min:26, max:27, ve:40},
+      {min:28, max:29, ve:42},{min:30, max:31, ve:44},{min:32, max:33, ve:45},
+      {min:34, max:35, ve:47},{min:36, max:37, ve:49},{min:38, max:39, ve:50},
+      {min:40, max:41, ve:52},{min:42, max:43, ve:54},{min:44, max:45, ve:56},
+      {min:46, max:47, ve:58},{min:48, max:49, ve:60},{min:50, max:50, ve:62},
+    ];
+    const pctTable = [
+      [80,120,1],[121,124,2],[125,127,3],[128,131,4],[132,134,5],[135,137,6],[138,139,7],
+      [140,142,8],[143,144,9],[145,146,10],[147,148,11],[149,150,12],[151,153,13],[154,154,14],
+      [155,156,15],[157,158,16],[159,160,17],[161,162,18],[163,164,19],[165,165,20],[166,167,21],
+      [168,169,22],[170,171,23],[172,172,24],[173,174,25],[175,175,26],[176,177,27],[178,178,28],
+      [179,180,29],[181,181,30],[182,182,31],[183,184,32],[185,185,33],[186,186,34],[187,188,35],
+      [189,189,36],[190,190,37],[191,191,38],[192,192,39],[193,193,40],[194,194,41],[195,196,42],
+      [197,197,43],[198,198,44],[199,199,45],[200,200,46],[201,201,47],[202,202,48],[203,203,49],
+      [204,204,50],[205,205,51],[206,206,52],[207,208,53],[209,209,54],[210,210,55],[211,211,56],
+      [212,212,57],[213,213,58],[214,214,59],[215,215,61],[216,216,62],[217,217,63],[218,218,64],
+      [219,219,65],[220,220,66],[221,221,67],[222,222,68],[223,223,69],[224,224,70],[225,225,71],
+      [226,226,72],[227,227,73],[228,228,74],[229,229,75],[230,230,76],[231,231,77],[232,232,78],
+      [233,233,79],[234,234,80],[235,235,81],[236,236,82],[237,237,83],[238,239,84],[240,240,85],
+      [241,241,86],[242,242,87],[243,243,88],[244,244,89],[245,245,90],[246,246,91],[247,247,92],
+      [248,248,93],[249,249,94],[250,250,95],[251,251,96],[252,252,97],[253,253,98],[254,320,99],
+    ];
+
+    function veFrom(wk, pc){
+      const sum = Math.max(0, Math.min(50, (Number(wk)||0) + (Number(pc)||0)));
+      for (const r of veChart){ if (sum >= r.min && sum <= r.max) return r.ve; }
+      return 20;
+    }
+    function percentileFromTotal(total){
+      for (const [lo,hi,p] of pctTable){ if (total >= lo && total <= hi) return p; }
+      return total > 320 ? 99 : 1;
+    }
+    function catFromPct(p){
+      if (p >= 93) return "I";
+      if (p >= 65) return "II";
+      if (p >= 50) return "IIIA";
+      if (p >= 31) return "IIIB";
+      if (p >= 21) return "IVA";
+      if (p >= 16) return "IVB";
+      if (p >= 10) return "IVC";
+      return "V";
+    }
+
+    function applyToSummary({ar, mk, wk, pc}){
+      const VE = veFrom(wk, pc);
+      const total = 2*VE + ar + mk;
+      const pct = percentileFromTotal(total);
+      const cat = catFromPct(pct);
+      // Big headline
+      document.getElementById('afqt-big').textContent = pct + '%';
+      // Line
+      document.getElementById('afqt-val').textContent = `AFQT: ${pct}%`;
+      document.getElementById('afqt-cat').textContent = `(Category ${cat})`;
+      // Bar
+      document.getElementById('afqt-bar').style.width = Math.max(0, Math.min(100, pct)) + '%';
+      // Subcards
+      document.getElementById('val-ar').textContent = ar;
+      document.getElementById('val-mk').textContent = mk;
+      document.getElementById('val-wk').textContent = wk;
+      document.getElementById('val-pc').textContent = pc;
+      document.getElementById('val-ve').textContent = VE;
+      // Raw counts line
+      ensureRawCountsLine({ ar:{c:ar,t:30}, mk:{c:mk,t:25}, wk:{c:wk,t:35}, pc:{c:pc,t:15} });
+      return {VE,total,pct,cat};
+    }
+
+    function ensureRawCountsLine(payload){
+      let line = document.getElementById('rawcounts-line');
+      if (!line){
+        line = document.createElement('div');
+        line.id = 'rawcounts-line';
+        line.className = 'rawcounts-line';
+        const title = document.createElement('span');
+        title.className = 'rawlabel';
+        title.textContent = 'Subtest raw correct:';
+        line.appendChild(title);
+        (document.getElementById('subtest-breakdown-content')||document.getElementById('applicant-summary')).appendChild(line);
+      }
+      // wipe old badges
+      [...line.querySelectorAll('.rawbadge')].forEach(n=>n.remove());
+
+      const mkBadge = (lab, c, t)=>{
+        const b = document.createElement('span');
+        b.className = 'rawbadge';
+        b.textContent = `${lab} ${c}/${t}`;
+        return b;
+      };
+      const {ar, mk, wk, pc} = payload;
+      line.appendChild(mkBadge('AR', ar.c, ar.t));
+      line.appendChild(mkBadge('MK', mk.c, mk.t));
+      line.appendChild(mkBadge('WK', wk.c, wk.t));
+      line.appendChild(mkBadge('PC', pc.c, pc.t));
+      // VE
+      const VE = veFrom(wk.c, pc.c);
+      const b = document.createElement('span'); b.className='rawbadge'; b.textContent=`VE ${VE}`;
+      line.appendChild(b);
+    }
+
+    window.demo = function(){
+      // Mock data (tweak these for different percentiles/categories)
+      const AR = { c: 18, t: 30 };
+      const MK = { c: 20, t: 25 };
+      const WK = { c: 22, t: 35 };
+      const PC = { c: 12, t: 15 };
+      applyToSummary({ ar: AR.c, mk: MK.c, wk: WK.c, pc: PC.c });
+    };
+
+    if (document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', demo);
+    } else {
+      demo();
+    }
+  })();
+  </script>
+</body>
+</html>
